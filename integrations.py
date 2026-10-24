@@ -282,46 +282,56 @@ class Akta:
 
 # --------------------------------------------------------------------------- Roundtable
 class NotesStore:
-    """Firm-wide memory. One note per founder.
+    """Firm-wide memory on Roundtable: one shared note per founder.
 
-    Local JSON always works. Roundtable: Arjun's advice was to use shared NOTES (fastest, visual).
-    We don't know Roundtable's exact API shape yet, so:
-      1) Every note is also written as Markdown to runtime/roundtable_outbox/. A Roundtable-connected agent
-         (Claude Code / custom agent connected per the quickstart) can post these as shared notes.
-      2) If ROUNDTABLE_NOTES_ENDPOINT + ROUNDTABLE_API_KEY are set, push() POSTs each note there.
-         TODO: adjust push() to the payload in the "Build on Roundtable" quickstart.
+    Local JSON always works. With ROUNDTABLE_API_KEY set (an agent key created for this app at roundtable.bot),
+    every note is saved as a Roundtable shared note via the HTTPS tool API (POST /api/tools/save_note), then updated
+    in place on later runs (note_id is remembered in runtime/roundtable_ids.json). Notes are also mirrored as
+    Markdown in runtime/roundtable_outbox/.
     """
 
     def __init__(self):
         self.path = RUNTIME / "notes.json"
         self.outbox = RUNTIME / "roundtable_outbox"
         self.outbox.mkdir(exist_ok=True)
-        self.endpoint = os.getenv("ROUNDTABLE_NOTES_ENDPOINT")
+        self.ids_path = RUNTIME / "roundtable_ids.json"
+        self.ids = json.loads(self.ids_path.read_text()) if self.ids_path.exists() else {}
+        self.base = os.getenv("ROUNDTABLE_API_BASE", "https://roundtable.bot/api/tools")
         self.key = os.getenv("ROUNDTABLE_API_KEY")
-        self.live = bool(self.endpoint and self.key)
+        self.folder = os.getenv("ROUNDTABLE_FOLDER", "last-touch")
+        self.live = bool(self.key)
         self.error = None
         self.pushed = 0
 
     def save_all(self, notes: list[dict], render_md):
         self.path.write_text(json.dumps(notes, indent=1, default=str))
         for n in notes:
-            (self.outbox / f"{n['id']}.md").write_text(render_md(n))
-            self.push(n, render_md(n))
+            md = render_md(n)
+            (self.outbox / f"{n['id']}.md").write_text(md)
+            self.push(n, md)
+        if self.live:
+            self.ids_path.write_text(json.dumps(self.ids, indent=1))
 
     def push(self, note: dict, markdown: str):
         if not self.live:
             return
+        body = {"kind": "note", "folder": self.folder, "content": markdown,
+                "title": f"Last Touch · {note.get('company') or note.get('founder')}: {note.get('status')}",
+                "request_id": f"lt-{note['id']}-{hashlib.sha1(markdown.encode()).hexdigest()[:12]}"}
+        if self.ids.get(note["id"]):
+            body["note_id"] = self.ids[note["id"]]
         try:
-            r = httpx.post(
-                self.endpoint,
-                headers={"Authorization": f"Bearer {self.key}"},
-                json={"title": f"{note.get('company') or note.get('founder')}: {note.get('status')}", "content": markdown},
-                timeout=20,
-            )
+            r = httpx.post(f"{self.base}/save_note", json=body, timeout=20, headers={
+                "Authorization": f"Bearer {self.key}", "Content-Type": "application/json",
+                "User-Agent": "roundtable-transfer/1.0"})
             r.raise_for_status()
+            data = r.json() if r.content else {}
+            nid = data.get("note_id") or data.get("id") or (data.get("note") or {}).get("id")
+            if nid:
+                self.ids[note["id"]] = nid
             self.pushed += 1
         except Exception as e:
-            self.error = f"Roundtable push failed: {e}"
+            self.error = f"Roundtable save_note failed: {e}"
 
 
 def status() -> dict:

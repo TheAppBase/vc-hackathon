@@ -28,7 +28,7 @@ Without keys it runs fully on cached or demo data, and every fallback is labelle
 | **Nicrron** | `integrations.LLM` | OpenAI-compatible (`https://api.nicrron.ai/v1`). Extracts structured fields from messy messages and polishes drafts. Turn on with the "Live AI" toggle. |
 | **Akta (Wokelo)** | `integrations.Akta` | Company search (is this company real?), industry search, comparable-company lists and industry news for every brief. Also gives the Watcher its signals on parked founders. |
 | **PRISM (Block Convey)** | `integrations.Tracer` | Every LLM call goes through `trace_llm`, and every agent run is submitted as a trajectory (`submit_trajectory`), one per agent per run. |
-| **Roundtable** | `integrations.NotesStore` | The firm memory: one shared note per founder. Notes are mirrored to `runtime/roundtable_outbox/*.md`. Set `ROUNDTABLE_NOTES_ENDPOINT` and `ROUNDTABLE_API_KEY`, then adjust `push()` to the quickstart's payload. Or connect a Roundtable agent that posts the outbox notes. |
+| **Roundtable** | `integrations.NotesStore` | The firm memory: one shared note per founder, saved to Roundtable via `POST /api/tools/save_note` into the `last-touch` folder and updated in place on later runs. Set `ROUNDTABLE_API_KEY` to an agent key created for this app (never a personal assistant's key). Notes are also mirrored to `runtime/roundtable_outbox/*.md`. |
 
 ## Design choices
 - **Rules decide, the AI extracts and writes.** Thesis checks, scores, routing and follow-up timing are plain code, so every verdict has a reason.
@@ -42,4 +42,4 @@ Without keys it runs fully on cached or demo data, and every fallback is labelle
 - `data/`: synthetic inbox (14 messages), firm and partner profiles, firm-memory seed, Akta demo fixtures
 
 ## Deploy (live link for Devpost)
-Push to a public GitHub repo, then on share.streamlit.io create a new app from `app.py` and add the keys under Secrets.
+Push to a public GitHub repo, then on share.streamlit.io create a new app from `app.py` and add the keys under Secrets as top-level TOML. This is a Streamlit server app, so it does not run on Vercel or other serverless hosts.
