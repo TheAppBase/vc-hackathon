@@ -18,7 +18,7 @@ from html import escape  # noqa: E402
 from urllib.parse import urlencode  # noqa: E402
 
 import markdown  # noqa: E402
-from flask import Flask, request  # noqa: E402
+from flask import Flask, jsonify, request  # noqa: E402
 
 import engine  # noqa: E402
 import integrations as ix  # noqa: E402
@@ -47,11 +47,17 @@ ICONS = {
     "send": '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
     "alert": '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
     "route": '<path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="m15 15 6 6"/><path d="M4 4l5 5"/>',
+    "settings": '<line x1="21" y1="4" x2="14" y2="4"/><line x1="10" y1="4" x2="3" y2="4"/><line x1="21" y1="12" x2="12" y2="12"/><line x1="8" y1="12" x2="3" y2="12"/><line x1="21" y1="20" x2="16" y2="20"/><line x1="12" y1="20" x2="3" y2="20"/><line x1="14" y1="2" x2="14" y2="6"/><line x1="8" y1="10" x2="8" y2="14"/><line x1="16" y1="18" x2="16" y2="22"/>',
+    "userplus": '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/>',
+    "x": '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    "up": '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+    "tool": '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+    "globe": '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
     "logo": '<path d="M7 11V7a5 5 0 0 1 10 0v4"/><path d="M5 11h14v6a7 7 0 0 1-14 0z"/><path d="M12 15v3"/>',
 }
 
 TAG = {"hot": "Hot", "park": "Parked", "warm": "Warm", "pass": "Pass"}
-TABS = [("today", "Today"), ("channel", "Firm channel"), ("triage", "Inbox triage"),
+TABS = [("channel", "Chat"), ("today", "Today"), ("triage", "Inbox triage"),
         ("briefs", "Briefs"), ("watch", "Watchlist"), ("memory", "Memory")]
 HUE = {"ava": "#0a84ff", "ben": "#30b0c7", "cara": "#bf5af2"}
 
@@ -189,10 +195,84 @@ box-shadow:inset 0 1px 0 rgba(255,255,255,.6),0 4px 12px rgba(16,44,52,.15)}
 .dock a .lbl{position:absolute;bottom:72px;white-space:nowrap;font-size:12px;padding:4px 10px;border-radius:8px;opacity:0;pointer-events:none;
 background:var(--glass-strong);border:1px solid var(--edge);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);transition:opacity .15s}
 .dock a:hover .lbl{opacity:1}
+.toolcard{margin:6px 0 6px 46px;max-width:620px;padding:9px 12px;border-radius:14px;font-size:12.5px;background:var(--glass);border:1px dashed var(--edge);box-shadow:inset 0 1px 0 rgba(255,255,255,.4)}
+.toolcard .th{display:flex;align-items:center;gap:6px;color:var(--muted)}.toolcard .th .ic{color:var(--blue)}
+.toolcard .tk{font-weight:700;text-transform:uppercase;letter-spacing:.04em;font-size:10.5px;color:var(--blue)}
+.toolcard code{display:block;margin:4px 0 2px;font-size:12.5px}.toolcard .tr{color:var(--muted)}
+.icon-only{padding:10px;width:40px;height:40px;justify-content:center}
+.chat{display:flex;flex-direction:column;gap:2px}.chat .msg{border-top:0;padding:6px 0}
+.bubble{background:var(--glass-strong);border:1px solid var(--edge);border-radius:18px 18px 18px 6px;padding:9px 14px;max-width:760px}
+.msg.me{flex-direction:row-reverse}.msg.me .bubble{background:linear-gradient(180deg,#3d9bff,#0a84ff);color:#fff;border-color:transparent;border-radius:18px 18px 6px 18px}
+.msg.me .time{color:rgba(255,255,255,.75)}.msg.sys{justify-content:center}.msg.sys span{font-size:12.5px;color:var(--muted);padding:4px 12px;border-radius:999px;background:var(--glass-strong)}
+.composer{position:sticky;bottom:100px;display:flex;gap:8px;margin-top:14px;padding:6px;border-radius:999px;background:var(--glass-strong);border:1px solid var(--edge);
+-webkit-backdrop-filter:blur(24px);backdrop-filter:blur(24px);box-shadow:var(--shadow)}
+.composer input,.add input{flex:1;min-width:0;border:0;background:transparent;font:inherit;color:var(--text);padding:8px 14px;outline:none}
+.send{width:38px;height:38px;border-radius:50%;border:0;display:grid;place-items:center;color:#fff;cursor:pointer;background:linear-gradient(180deg,#3d9bff,#0a84ff)}
+.sheet{width:min(440px,calc(100vw - 32px));padding:22px 24px;color:var(--text);background:var(--glass-strong)}
+.sheet::backdrop{background:rgba(10,20,22,.25);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+.sheet-head{display:flex;justify-content:space-between;align-items:center}.sheet h2{margin:0;font-size:20px}
+.sheet h3{font-size:13px;color:var(--muted);font-weight:600;margin:18px 0 4px}
+.team li small{display:block;color:var(--muted);font-size:12.5px}.team li b{font-weight:600}.team li .rm{margin-left:auto;background:none;border:0;color:var(--muted);cursor:pointer}
+.add{display:flex;gap:8px;padding:5px;border-radius:999px;background:var(--glass);border:1px solid var(--edge)}
+.hint{color:var(--muted);font-size:12.5px;margin:10px 2px 0}.hint.err{color:var(--hot)}
+button.btn{cursor:pointer;font:inherit;font-weight:600;font-size:14px;color:inherit}
 @media (max-width:980px){.metrics{grid-template-columns:repeat(3,1fr);row-gap:12px}.metric:nth-child(4){border-left:0}.cols,.split{grid-template-columns:1fr}.hero{grid-template-columns:1fr}.actions{justify-content:flex-start}}
 @media (max-width:620px){.page{padding:16px 16px 120px}.hero{padding:22px 20px}.hero h1{font-size:32px}.hero{padding:18px 4px 16px}.section{padding:18px 16px}
 .metric .v{font-size:22px}.dock{gap:2px;padding:6px;bottom:10px}
 .dock a{width:50px;height:50px}.dock a .tile{width:44px;height:44px;border-radius:12px}}
+"""
+
+
+
+JS = """
+(function(){
+  const $ = (s) => document.querySelector(s);
+  const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const now = () => new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  let people = [];
+  try { people = JSON.parse(localStorage.getItem('lt_people') || '[]'); } catch (e) {}
+  const save = () => { try { localStorage.setItem('lt_people', JSON.stringify(people)); } catch (e) {} };
+  const initials = (u) => u.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase();
+  const chat = $('#chat');
+  function sys(text){ if (!chat) return; chat.insertAdjacentHTML('beforeend', `<div class="msg sys"><span>${esc(text)}</span></div>`); }
+  function renderPeople(){
+    $('#people').innerHTML = people.map((u, i) => `<li><span class="avatar" style="--hue:#ff9f0a;width:32px;height:32px;font-size:12px">${esc(initials(u))}</span>`
+      + `<span><b>@${esc(u)}</b><small>Agent ready</small></span><button class="rm" data-i="${i}" aria-label="Remove">Remove</button></li>`).join('');
+  }
+  renderPeople();
+  people.forEach((u) => sys(`@${u}'s agent is in the chat`));
+  $('#open-settings').addEventListener('click', () => $('#settings').showModal());
+  $('#close-settings').addEventListener('click', () => $('#settings').close());
+  $('#people').addEventListener('click', (ev) => {
+    const b = ev.target.closest('.rm'); if (!b) return;
+    const [u] = people.splice(+b.dataset.i, 1); save(); renderPeople(); sys(`@${u} was removed`);
+  });
+  $('#add-person').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const hint = $('#add-hint'); const u = $('#username').value.trim().replace(/^@/, '');
+    if (!/^[A-Za-z0-9_.-]{2,30}$/.test(u)) { hint.textContent = 'Use 2 to 30 letters, numbers, dots, dashes or underscores.'; hint.classList.add('err'); return; }
+    if (people.some((p) => p.toLowerCase() === u.toLowerCase())) { hint.textContent = `@${u} is already on the team.`; hint.classList.add('err'); return; }
+    people.push(u); save(); renderPeople(); $('#username').value = '';
+    hint.classList.remove('err'); hint.textContent = `Added @${u}. Their agent joined the firm chat.`;
+    sys(`@${u} joined. Their agent is set up and shares the firm memory.`);
+  });
+  const form = $('#composer');
+  if (form) form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const input = $('#chat-input'); const text = input.value.trim(); if (!text) return;
+    input.value = '';
+    chat.insertAdjacentHTML('beforeend', `<div class="msg me"><div class="bubble"><b>You</b><span class="time">${now()}</span><div>${esc(text)}</div></div></div>`);
+    chat.lastElementChild.scrollIntoView({behavior:'smooth', block:'center'});
+    const q = Object.fromEntries(new URLSearchParams(form.dataset.q || ''));
+    try {
+      const r = await fetch('/api/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...q, text})});
+      const d = await r.json();
+      if (d.tools) chat.insertAdjacentHTML('beforeend', d.tools);
+      chat.insertAdjacentHTML('beforeend', `<div class="msg">${d.avatar}<div class="bubble"><b>${esc(d.agent)}</b><span class="time">${now()}</span><div>${esc(d.text)}</div></div></div>`);
+    } catch (e) { sys('The agents could not be reached. Try again.'); }
+    chat.lastElementChild.scrollIntoView({behavior:'smooth', block:'center'});
+  });
+})();
 """
 
 
@@ -222,13 +302,123 @@ def tab_today(state, leads, members):
                    f"<div class='cols'>{''.join(cols)}</div>")
 
 
-def tab_channel(state, members):
-    out = []
+def bubble(agent: str, text: str, t: str, members: dict) -> str:
+    return (f"<div class='msg'>{agent_avatar(agent, members)}<div class='bubble'><b>{e(agent)}</b>"
+            f"<span class='time'>{e(t)}</span><div>{e(text)}</div></div></div>")
+
+
+def toolcard(kind: str, caller: str, call: str, result: str, target: str = "") -> str:
+    head = f"{e(caller)} → {e(target)}" if target else e(caller)
+    return (f"<div class='toolcard'><div class='th'>{icon('globe' if kind == 'akta' else 'tool', 14)}<span class='tk'>Tool call</span>"
+            f"<span>{head}</span></div><code>{e(call)}</code><div class='tr'>{e(result)}</div></div>")
+
+
+def akta_card(n: dict) -> str:
+    ak = n.get("akta") or {}
+    bits = []
+    if ak.get("match"):
+        bits.append(f"match: {ak['match']['name']}")
+    if ak.get("comps"):
+        bits.append("comparables: " + ", ".join(c["name"] for c in ak["comps"][:4]))
+    if ak.get("news"):
+        bits.append(f"{len(ak['news'])} news items")
+    return toolcard("akta", "Ava's agent", f"akta.pro search(\"{n.get('company') or n.get('founder')}\")",
+                    ("; ".join(bits) or "no records (normal for pre-seed)") + f" [{ak.get('source', 'demo fixture')}]")
+
+
+def score_card(n: dict, members: dict) -> str:
+    scores = n.get("all_scores") or {}
+    targets = " and ".join(f"{first(members[m]['name'])}'s agent" for m in scores)
+    result = " · ".join(f"{first(members[m]['name'])} {v}/100" for m, v in scores.items())
+    if n.get("routed_to"):
+        result += f" → routed to {first(members[n['routed_to']]['name'])}"
+    return toolcard("agent", "Ava's agent", f"score_lead(\"{n.get('company') or n.get('founder')}\")", result, targets)
+
+
+def tab_channel(state, members, params):
+    notes = {n["id"]: n for n in state["notes"] if n.get("status")}
+    seen, items = set(), []
     for f in state["feed"]:
-        out.append(f"<div class='msg'>{agent_avatar(f['agent'], members)}<div><b>{e(f['agent'])}</b>"
-                   f"<span class='time'>{e(f['t'])}</span><div>{e(f['text'])}</div></div></div>")
-    return section("channel", "Firm channel", "What the agents told each other. Every note lives in the firm's shared memory (Roundtable).",
-                   f"<div class='card'>{''.join(out)}</div>")
+        nid = f.get("note")
+        if nid in notes and nid not in seen:
+            seen.add(nid)
+            items.append(akta_card(notes[nid]) + score_card(notes[nid], members))
+        items.append(bubble(f["agent"], f["text"], f["t"], members))
+    feed = "".join(items)
+    composer = (f"<form class='composer' id='composer' data-q='{e(urlencode({k: v for k, v in params.items() if k in ('live', 'closed', 'signals') and v}))}'>"
+                f"<input id='chat-input' autocomplete='off' placeholder='Ask the agents: who is hot, Tracewell, search Langfuse'>"
+                f"<button class='send' aria-label='Send'>{icon('up', 18)}</button></form>")
+    return section("channel", "Firm chat", "", f"<div class='chat' id='chat'>{feed}</div>{composer}")
+
+
+def akta_search(term: str) -> str:
+    """The agents' mini web search: akta.pro company search, or the labelled demo fixtures without a key."""
+    if ix.AKTA.live:
+        rows = ix.AKTA.company_search(term)[:5]
+        names = ", ".join(ix._name(r) for r in rows)
+        return toolcard("akta", "Ava's agent", f"akta.pro search(\"{term}\")", (names or "no results") + " [Akta (live)]")
+    t = term.lower()
+    hits = [f"{co}: {', '.join(c)}" for co, c in ix.AKTA.fixtures["comps"].items()
+            if t in co.lower() or any(t in x.lower() for x in c)]
+    return toolcard("akta", "Ava's agent", f"akta.pro search(\"{term}\")", ("; ".join(hits[:3]) or "no results") + " [demo fixture]")
+
+
+def answer(text: str, state: dict) -> tuple[str, str, str]:
+    agent, reply = _answer(text, state)
+    q = (text or "").lower()
+    members = state["members"]
+    tools = ""
+    for n in state["notes"]:
+        if n.get("status") and (n.get("company") or "").lower() in q and n.get("company"):
+            tools = akta_card(n) + score_card(n, members)
+            break
+    for w in ("search ", "akta ", "look up ", "lookup "):
+        if w in q:
+            term = text[q.index(w) + len(w):].strip(" ?.")
+            if term:
+                tools += akta_search(term)
+                if not tools.count("score_lead"):
+                    reply = "Here is what akta.pro returned."
+            break
+    return agent, reply, tools
+
+
+def _answer(text: str, state: dict) -> tuple[str, str]:
+    """Mock agent reply over the demo run. Returns (agent name, text)."""
+    q = (text or "").lower()
+    members, leads = state["members"], [n for n in state["notes"] if n.get("status")]
+    ava = "Ava's agent (Associate)"
+    name = lambda n: n.get("company") or n.get("founder")  # noqa: E731
+    for n in leads:
+        if name(n) and name(n).lower() in q or (n.get("founder") and n["founder"].lower() in q):
+            who = members.get(n.get("routed_to") or n["owner"])
+            agent = f"{first(who['name'])}'s agent ({'Associate' if who['id'] == 'ava' else 'Partner'})"
+            return agent, (f"{name(n)} ({n.get('founder')}): {n.get('one_liner', '')}. Status {TAG[n['status']].lower()}. "
+                           f"{n.get('reason', '')}.")
+    for mid, m in members.items():
+        if first(m["name"]).lower() in q:
+            acts = [f"{name(n)}: {a['what']}" for n in leads for a in n.get("actions", [])
+                    if a["who"] == mid and a["kind"] not in ("second_touch", "recheck")]
+            agent = f"{first(m['name'])}'s agent ({'Associate' if mid == 'ava' else 'Partner'})"
+            return agent, (f"{first(m['name'])} has {len(acts)} to-dos: " + "; ".join(acts) + ".") if acts else (agent, "Nothing due.")
+    for key, label in (("hot", "hot"), ("park", "parked"), ("warm", "warm"), ("pass", "pass")):
+        if label in q or (key == "park" and "parked" in q):
+            names = [f"{name(n)} ({n.get('score') if n.get('score') is not None else 'outside thesis'})" for n in leads if n["status"] == key]
+            return ava, f"{label.capitalize()}: " + (", ".join(names) or "none") + "."
+    if any(w in q for w in ("drop", "spam", "junk")):
+        rows = [f"{r['from']}: {r['reason']}" for r in state["triage"] if r["triage"] == "drop"]
+        return ava, f"Dropped {len(rows)}: " + "; ".join(rows) + "."
+    return ava, ("I can answer from today's run. Try: who is hot, what is parked, what got dropped, a company name "
+                 "(for example Tracewell), a person (what does Ben need to do), or search a company on akta.pro (search Langfuse).")
+
+
+@app.route("/api/chat", methods=["POST"])
+def chat_api():
+    body = request.get_json(silent=True) or {}
+    live = body.get("live") == "1" and ix.LLM_CLIENT.live
+    state = get_state(bool(live), body.get("signals") == "1", body.get("closed") == "1")
+    agent, text, tools = answer(str(body.get("text", ""))[:500], state)
+    return jsonify({"agent": agent, "text": text, "tools": tools, "avatar": agent_avatar(agent, state["members"])})
 
 
 def tab_triage(state, leads, members):
@@ -303,7 +493,7 @@ def section(name, title, sub, body):
 def index():
     params = {k: request.args.get(k) for k in ("live", "closed", "signals", "tab", "brief")}
     params["live"] = 1 if (params.get("live") == "1" and ix.LLM_CLIENT.live) else 0
-    tab = params.get("tab") if params.get("tab") in dict(TABS) else "today"
+    tab = params.get("tab") if params.get("tab") in dict(TABS) else "channel"
     state = get_state(bool(params["live"]), params.get("signals") == "1", params.get("closed") == "1")
 
     notes, members = state["notes"], state["members"]
@@ -317,13 +507,21 @@ def index():
                     f"Live AI: {'on' if params['live'] else 'off'}</a>")
     hero = (f"<header class='hero'><div><h1>Last Touch</h1><p>One agent per person. One shared firm memory.</p></div>"
             f"<div class='actions'>{live_btn}<a class='btn primary' href='{link({'live': params['live'], 'tab': tab})}'>"
-            f"{icon('play', 15)}Run agents</a></div></header>")
+            f"{icon('play', 15)}Run agents</a><button class='btn icon-only' id='open-settings' aria-label='Settings'>{icon('settings', 17)}</button>"
+            f"</div></header>")
+    team = "".join(f"<li>{avatar(m, 32)}<span><b>{e(m['name'])}</b><small>{e(m['role'])}</small></span></li>" for m in members.values())
+    settings = (f"<dialog id='settings' class='glass sheet'><div class='sheet-head'><h2>Settings</h2>"
+                f"<button class='btn icon-only' id='close-settings' aria-label='Close'>{icon('x', 16)}</button></div>"
+                f"<h3>Team</h3><ul class='plain team'>{team}</ul><ul class='plain team' id='people'></ul>"
+                f"<h3>Add a person</h3><form id='add-person' class='add'><input id='username' autocomplete='off' placeholder='Username, e.g. @dana'>"
+                f"<button class='btn primary'>{icon('userplus', 16)}Add</button></form>"
+                f"<p class='hint' id='add-hint'>Each person gets their own agent in the firm chat. Saved in this browser for the demo.</p></dialog>")
 
     metrics = [("Inbound", len(state["triage"])), ("Dropped", dropped), ("Hot", count("hot")),
                ("Parked", count("park")), ("Warm", count("warm")), ("Pass", count("pass"))]
     m = "".join(f"<div class='metric'><div class='v'>{v}</div><div class='k'>{k}</div></div>" for k, v in metrics)
 
-    views = {"today": lambda: tab_today(state, leads, members), "channel": lambda: tab_channel(state, members),
+    views = {"today": lambda: tab_today(state, leads, members), "channel": lambda: tab_channel(state, members, params),
              "triage": lambda: tab_triage(state, leads, members), "briefs": lambda: tab_briefs(state, leads, members, params),
              "watch": lambda: tab_watch(state, leads, params), "memory": lambda: tab_memory(state, notes)}
     dock = "".join(f"<a class='{'on' if t == tab else ''}' href='{link(params, tab=t)}' aria-label='{label}'>"
@@ -331,7 +529,7 @@ def index():
 
     return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             f"<title>Last Touch</title><style>{CSS}</style></head><body><main class='page'>{hero}"
-            f"<div class='glass metrics'>{m}</div>{views[tab]()}</main><nav class='glass dock'>{dock}</nav></body></html>")
+            f"<div class='glass metrics'>{m}</div>{views[tab]()}</main><nav class='glass dock'>{dock}</nav>{settings}<script>{JS}</script></body></html>")
 
 
 if __name__ == "__main__":
