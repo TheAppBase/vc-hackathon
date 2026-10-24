@@ -147,9 +147,12 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
 
   // ---------------------------------------------------------------- server
   class NeedsSignin extends Error {}
-  // One id per open chat (page load), so PRISM groups this conversation's traces together.
-  const CHAT_ID = (window.crypto && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36)).slice(0, 36);
+  // One id per conversation (this tab, and a new one after 30 minutes idle), so PRISM groups its traces together.
+  const newChatId = () => (window.crypto && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36)).slice(0, 36);
+  let CHAT_ID = newChatId(), lastCall = Date.now();
   async function api(url, body, method) {
+    if (Date.now() - lastCall > 30 * 60 * 1000) CHAT_ID = newChatId();
+    lastCall = Date.now();
     const d = new Date(), pad = (n) => String(n).padStart(2, '0');
     const opts = {method: method || (body === undefined ? 'GET' : 'POST'), headers: {
       'X-Local-Date': `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, 'X-TZ-Offset': String(d.getTimezoneOffset()), 'X-Chat-Id': CHAT_ID}};
@@ -207,18 +210,21 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   async function run(fn) {
     if (busy) return; busy = true;
     try { await fn(); } catch (e) {
-      if (e instanceof NeedsSignin) { queued = null; return; }
+      if (e instanceof NeedsSignin) { requeue(); return; }
       say(esc(e.message || 'Something went wrong. Try again.'));
     } finally {
       busy = false;
-      if (queued) { const q = queued; queued = null; send(q.text, q.via); }
+      if (queued.length) { const q = queued.shift(); send(q.text, q.via); }
     }
   }
 
   // ---------------------------------------------------------------- dictation (no time limit, fills the chat box live)
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   let rec = null, listening = false, baseText = '', finalText = '', dictated = false, seen = 0, skipBefore = 0, restarts = [];
-  let interimIdx = -1, interimText = '', typedOver = null;
+  // cut: the phrase being heard when the user typed in the box ({from: its first result, words: how many of its words are
+  // already in the box, text: all of it so far}). Its new words are added by count, so nothing is doubled or lost.
+  let interimIdx = -1, interimText = '', shownInterim = '', cut = null;
+  const words = (t) => (t.trim() ? t.trim().split(/\s+/) : []);
   const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 168) + 'px'; };
   function micUI() {
     $('#mic').classList.toggle('on', listening); $('#composer').classList.toggle('listening', listening);
@@ -230,7 +236,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   }
   function startDictation() {
     if (!SR) { sys('Recording needs Chrome, Edge or Safari. You can type the note instead.'); input.focus(); return; }
-    listening = true; dictated = true; finalText = ''; seen = 0; skipBefore = 0; restarts = []; typedOver = null; interimIdx = -1;
+    listening = true; dictated = true; finalText = ''; seen = 0; skipBefore = 0; restarts = []; cut = null; interimIdx = -1; shownInterim = '';
     baseText = input.value.trim() ? input.value.replace(/\s*$/, ' ') : '';
     const me = new SR(); rec = me;
     me.continuous = true; me.interimResults = true; me.lang = navigator.language || 'en-US';
@@ -238,22 +244,27 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     // recognizer that was stopped and replaced, are ignored (they used to refill the box with the sent note).
     me.onresult = (e) => {
       if (rec !== me || !listening) return;
-      let interim = '';
+      let interim = '', firstI = -1, allI = '';
       const addFinal = (t) => { t = t.trim(); if (!t) return; const sofar = baseText + finalText; finalText += (sofar && !/\s$/.test(sofar) ? ' ' : '') + t; };
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
-        let t = r[0].transcript;
-        if (i < skipBefore) {
-          // The user typed while this phrase was being heard: its first part is already in the box, keep only what's new.
-          if (!typedOver || i !== typedOver.i) continue;
-          const shown = typedOver.text.trim();
-          t = t.trim().startsWith(shown) ? t.trim().slice(shown.length) : (r.isFinal ? '' : '');
-          if (r.isFinal) { addFinal(t); typedOver = null; } else interim += t;
-          continue;
-        }
-        if (r.isFinal) addFinal(t);
-        else { interim += t; interimIdx = i; interimText = t; }
+        if (i < skipBefore || (cut && i >= cut.from)) continue;  // already in the box, or the phrase typed over (below)
+        if (r.isFinal) addFinal(r[0].transcript);
+        else { if (firstI < 0) firstI = i; allI += r[0].transcript; }
       }
+      if (cut) {
+        // The user typed while this phrase was being heard: its first words are already in the box. Skip that many words
+        // (not an exact prefix: the recognizer often revises earlier words) and add the rest once it's all final.
+        let all = '', done = true;
+        for (let i = cut.from; i < e.results.length; i++) { all += e.results[i][0].transcript + ' '; done = done && e.results[i].isFinal; }
+        cut.text = all;
+        const fresh = words(all).slice(cut.words).join(' ');
+        if (done) { addFinal(fresh); skipBefore = e.results.length; cut = null; interimIdx = -1; }
+        else interim = fresh;
+      } else {
+        interimIdx = firstI; interimText = allI; interim = allI;
+      }
+      shownInterim = interim;
       seen = e.results.length;
       input.value = (baseText + finalText + (interim ? ' ' + interim.trim() : '')).replace(/^\s+/, '');
       grow(); input.scrollTop = input.scrollHeight;
@@ -272,7 +283,9 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
       const now = Date.now();
       restarts = restarts.filter((t) => now - t < 10000).concat(now);
       if (restarts.length > 8) { stopDictation(); sys('Recording keeps stopping on its own. Tap the mic to try again.'); return; }
-      baseText = (baseText + finalText).replace(/\s*$/, ' '); finalText = ''; seen = 0; skipBefore = 0; typedOver = null; interimIdx = -1;
+      // Anything still shown as heard-but-not-final stays in the box rather than vanishing on the restart.
+      if (shownInterim.trim()) finalText += ((baseText + finalText) && !/\s$/.test(baseText + finalText) ? ' ' : '') + shownInterim.trim();
+      baseText = (baseText + finalText).replace(/\s*$/, ' '); finalText = ''; seen = 0; skipBefore = 0; cut = null; interimIdx = -1; shownInterim = '';
       try { me.start(); } catch (e) { setTimeout(() => { if (rec === me && listening) try { me.start(); } catch (x) { stopDictation(); } }, 250); }
     };
     try { me.start(); } catch (e) { listening = false; rec = null; }
@@ -289,8 +302,9 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     grow();
     // The user edited the box mid-recording: keep their text and drop the phrase being heard (it's already in the box).
     if (listening) {
-      baseText = input.value.replace(/\s*$/, ' '); finalText = ''; skipBefore = seen;
-      typedOver = interimIdx >= 0 && interimIdx < seen ? {i: interimIdx, text: interimText} : null;
+      baseText = input.value.replace(/\s*$/, ' '); finalText = ''; skipBefore = seen; shownInterim = '';
+      if (cut) cut.words = words(cut.text).length;  // typed again: everything heard of that phrase so far is in the box now
+      else if (interimIdx >= 0 && interimIdx < seen) cut = {from: interimIdx, words: words(interimText).length, text: interimText};
     }
   });
   input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $('#composer').requestSubmit(); } });
@@ -500,7 +514,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
       <h3>Safety</h3><div class="seg">
         <label class="${ME.mode === 'ask' ? 'on' : ''}"><input type="radio" name="mode" value="ask" ${ME.mode === 'ask' ? 'checked' : ''}><span><b>Ask mode (PRISM off)</b><small>Nothing is sent to PRISM. Your notes save straight away.</small></span></label>
         <label class="${ME.mode === 'auto' ? 'on' : ''} ${D.prism ? '' : 'off'}"><input type="radio" name="mode" value="auto" ${ME.mode === 'auto' ? 'checked' : ''} ${D.prism ? '' : 'disabled'}><span><b>Auto mode (PRISM on)</b><small>${D.prism ? 'PRISM watches everything the agent does and reviews each note before it is saved. It can block an unsafe note; you never have to approve one.' : D.prism_error ? `PRISM couldn't start: ${esc(D.prism_error)}` : 'Needs PRISMTRACE_API_KEY on the server.'}</small></span></label>
-      </div><p class="hint">Reading is always allowed. In both modes, secrets (keys, passwords, card numbers) are removed from notes before they reach the firm memory.</p>
+      </div><p class="hint err" id="mode-hint"></p><p class="hint">Reading is always allowed. In both modes, secrets (keys, passwords, card numbers) are removed from notes before they reach the firm memory.</p>
       <h3>Connected</h3><ul class="list" id="integ-list"><li class="small">Checking…</li></ul>
       <h3>Team</h3><ul class="list" id="team-list"><li class="small">Loading…</li></ul>
       <h3>Add a person</h3><form class="add" id="add-person"><input id="username" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Their username" aria-label="Username"><button class="btn primary" id="add-btn">${ic('userplus', 14)}Add</button></form>
@@ -512,7 +526,10 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     const fill = (id, html) => { const el = $('#' + id); if (el) el.innerHTML = html; };
     const removeMate = async (u) => {
       try { ME = (await api('/api/team/' + encodeURIComponent(u), undefined, 'DELETE')).user; sys(`@${u} was removed from your team`); loadTeam(); }
-      catch (e) { if (!(e instanceof NeedsSignin)) sys(`Couldn't remove @${u}: ${e.message}`); }
+      catch (e) {
+        if (e instanceof NeedsSignin) return;
+        const h = $('#add-hint'); if (h) { h.textContent = `Couldn't remove @${u}: ${e.status ? e.message : 'check your connection'}`; h.className = 'hint err'; }
+      }
     };
     const wire = () => {
       $('#close-settings').onclick = () => dlg.close();
@@ -534,8 +551,8 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
         }
       };
       dlg.querySelectorAll('input[name=mode]').forEach((r) => { r.onchange = async () => {
-        try { ME = (await api('/api/settings', {mode: r.value})).user; sys(ME.mode === 'auto' ? 'Auto mode: PRISM watches the agent and reviews every note.' : 'Ask mode: PRISM is off.'); }
-        catch (e) { if (!(e instanceof NeedsSignin)) sys(e.message); }
+        try { ME = (await api('/api/settings', {mode: r.value})).user; $('#mode-hint').textContent = ''; sys(ME.mode === 'auto' ? 'Auto mode: PRISM watches the agent and reviews every note.' : 'Ask mode: PRISM is off.'); }
+        catch (e) { if (!(e instanceof NeedsSignin)) $('#mode-hint').textContent = e.status ? e.message : "Couldn't change the mode right now. Check your connection."; }
         dlg.querySelectorAll('input[name=mode]').forEach((x) => { x.checked = x.value === ME.mode; x.closest('label').classList.toggle('on', x.value === ME.mode); });
       }; });
       dlg.querySelectorAll('[data-rm]').forEach((b) => { b.onclick = () => removeMate(b.dataset.rm); });
@@ -549,7 +566,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
         t = setTimeout(async () => {
           let r;
           try { r = await api('/api/username/' + encodeURIComponent(u)); }
-          catch (e) { if (!(e instanceof NeedsSignin) && uIn.value.trim().replace(/^@/, '').toLowerCase() === u) { hint.textContent = "Couldn't check that username right now."; hint.className = 'hint err'; } return; }
+          catch (e) { if (!(e instanceof NeedsSignin) && uIn.value.trim().replace(/^@/, '').toLowerCase() === u) { hint.textContent = e.status ? e.message : "Couldn't check that username right now."; hint.className = 'hint err'; } return; }
           if (uIn.value.trim().replace(/^@/, '').toLowerCase() !== u) return;
           if (!r.valid) { hint.textContent = r.message; hint.className = 'hint err'; }
           else if (r.exists) { hint.textContent = u === ME.username ? "That's you." : `@${u} exists.`; hint.className = u === ME.username ? 'hint err' : 'hint ok'; }
@@ -594,7 +611,12 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   $('#open-settings').onclick = () => { $('#settings').showModal(); renderSettings(); };
 
   // ---------------------------------------------------------------- composer
-  let queued = null;
+  let queued = [];
+  // Signed out with messages still waiting: put them back in the box, so nothing typed or dictated is lost.
+  const requeue = () => {
+    if (queued.length) { input.value = [input.value.trim(), ...queued.map((q) => q.text)].filter(Boolean).join('\n'); grow(); }
+    queued = [];
+  };
   function send(text, via) { if (step >= 0) run(() => answer(text)); else run(() => ask(text, via)); }
   $('#composer').addEventListener('submit', (ev) => {
     ev.preventDefault();
@@ -603,9 +625,9 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     const text = input.value.trim(); if (!text) return;
     input.value = ''; grow();
     if (busy) {
-      // Still working on the last message: send this one as soon as that's done (only the latest is kept).
-      if (queued) sys('Replaced the waiting message with this one.'); else sys("I'll send this as soon as I finish the last one.");
-      queued = {text, via: wasDictated ? 'dictation' : 'typed'};
+      // Still working on the last message: send this one (and any others) in order as soon as that's done.
+      queued.push({text, via: wasDictated ? 'dictation' : 'typed'});
+      sys(queued.length === 1 ? "I'll send this as soon as I finish the last one." : `I'll send this next (${queued.length} waiting).`);
       return;
     }
     send(text, wasDictated ? 'dictation' : 'typed');
@@ -616,7 +638,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     password_changed: 'Your password was changed on another device. Sign in with the new one.',
     expired: 'Your session ended. Sign in again.'};
   function showAuth(reason) {
-    stopDictation(); queued = null;
+    stopDictation(); requeue();
     $('#app').hidden = true; $('#open-settings').hidden = true; $('#settings').open && $('#settings').close(); $('#auth').hidden = false;
     if (reason) modeUI('in');  // signed out mid-session: back to the Sign in tab
     cancelWait(); authGo.disabled = false; authGo.classList.remove('busy'); authGo.textContent = authMode === 'up' ? 'Create account' : 'Sign in';
@@ -664,7 +686,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     check = setTimeout(async () => {
       let r;
       try { r = await api('/api/username/' + encodeURIComponent(u)); }
-      catch (e) { if (authMode === 'up' && authUser.value.trim().replace(/^@/, '').toLowerCase() === u) hint(e.message || "Couldn't check that username right now.", 'err'); return; }
+      catch (e) { if (authMode === 'up' && authUser.value.trim().replace(/^@/, '').toLowerCase() === u) hint(e.status ? e.message : "Couldn't check that username right now.", 'err'); return; }
       if (authMode !== 'up' || authUser.value.trim().replace(/^@/, '').toLowerCase() !== u) return;
       authState = r;
       if (!r.valid) hint(r.message, 'err');

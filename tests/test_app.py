@@ -92,6 +92,30 @@ with app.app.test_request_context(headers={'X-Chat-Id': 'tab-aaaaaaaa'}):
 with app.app.test_request_context(headers={'X-Chat-Id': 'tab-bbbbbbbb'}):
     s2 = app.chat_sid({'username': 'alex'})
 ok(s1 != s2, "#33 tabs share a PRISM session")
+# --- round 3: due dates, password blob, first-name merges, paid caps, device cookie
+with app.app.test_request_context(headers={'X-TZ-Offset': '420'}):
+    ok(app.nice_date('2026-10-30') == 'Fri Oct 30', f"date-only due date shifted by the time zone: {app.nice_date('2026-10-30')}")
+raw = json.load(open(os.path.join(store.LOCAL, 'users', 'alex.json')))
+ok('password' not in raw and os.path.exists(os.path.join(store.LOCAL, 'auth', 'alex.json')), "password kept in the profile blob")
+d = app.app.test_client(); signup(d, 'dana')
+for t in ['Met Maya Okafor from Quillstack.', 'Met Maya from Kite, building robots.']:
+    d.post('/api/notes', json={'text': t})
+fs = [f"{f['founder']}/{f['company']}" for f in d.get('/api/founders').json['founders']]
+ok(len(fs) == 2, f"a first name at another company was merged: {fs}")
+day = dt.datetime.now(dt.timezone.utc).date().isoformat()
+ok(len(store.list_paths(f"usage/_firm/{day}/")) == 3, "someone over their own cap used up the firm's paid calls")
+ok(app.extra_focus('Robotics and edtech, seed') == ['robotics', 'edtech'] and app.build_profile({'focus': 'Robotics and edtech, seed'}, 'A B')['sectors'] == [],
+   "focus outside the known sectors")
+r = app.app.test_client().post('/api/signin', json={'username': 'ghost', 'password': 'whatever1'})
+ok(r.status_code == 403 and not os.path.exists(os.path.join(store.LOCAL, 'attempts', 'ghost')), "made-up username left attempt blobs")
+ts = [threading.Thread(target=lambda i=i: app.app.test_client().post('/api/signin', json={'username': 'alex', 'password': 'nope nope'},
+                                                                       headers={'X-Real-IP': f'10.0.0.{i}'})) for i in range(8)]
+[t.start() for t in ts]; time.sleep(0.5)
+r = app.app.test_client().post('/api/signin', json={'username': 'alex', 'password': 'brand new pass'}, headers={'X-Real-IP': '10.0.1.1'})
+ok(r.status_code == 429 and 'this account' in r.json['error'], f"account cap message: {r.status_code} {r.json}")
+r = c.post('/api/signin', json={'username': 'alex', 'password': 'brand new pass'}, headers=owner)
+ok(r.status_code == 200, f"owner's known device was locked out by strangers: {r.status_code} {r.json}")
+[t.join() for t in ts]
 # --- F8 session key: a storage error never breaks pages
 store.LIVE = True; app.app.secret_key = None
 orig = store.shared_secret; store.shared_secret = lambda: (_ for _ in ()).throw(RuntimeError('blob down'))

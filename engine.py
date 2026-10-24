@@ -37,8 +37,13 @@ STOP = {"tons", "plenty", "dozens", "loads", "another", "numerous", "various", "
         "up", "today", "yesterday", "tonight", "and", "to", "for", "at", "in", "on", "about", "who", "it", "again", "back",
         "recently", "earlier", "later", "from", "of", "lots", "lot", "many", "several", "few", "bunch", "couple", "other",
         "more", "new", "great", "good", "amazing", "interesting", "cool", "really", "very", "so", "just", "also", "there",
-        "here", "him", "she", "he", "they", "we", "you", "i", "was", "is", "and", "but", "then", "after", "before"}
+        "here", "him", "she", "he", "they", "we", "you", "i", "was", "is", "and", "but", "then", "after", "before",
+        "hundreds", "thousands", "heaps", "tonnes", "everybody", "handful", "dozen", "number", "five", "six", "seven",
+        "eight", "nine", "ten", "twenty", "briefly", "online", "virtually", "finally", "quickly", "formally", "legal",
+        "counsel", "lawyers", "accounting", "sales", "marketing", "product", "engineering", "design", "ops", "hr",
+        "recruiting", "me", "your"}
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+TIME_WORDS = {"today", "yesterday", "tonight", "last", "this", "earlier", "recently", "again", "later", "next"} | set(WEEKDAYS)
 
 
 def _word_re(w: str) -> str:
@@ -99,7 +104,7 @@ Their focus: {focus}."""
 TITLE = r"(?:(?:Dr|Mr|Mrs|Ms|Mx|Prof)\.?\s+)?"
 CAP = r"[A-ZÀ-ÖØ-ÞŁŚŻŹĆŃŠČŽ]"
 LOWER = r"[a-zß-öø-ÿłśżźćńščž]"
-NAME_WORD = rf"(?:{CAP}{LOWER}*(?:['’]{CAP}?{LOWER}+|{CAP}{LOWER}+)*|[A-Z]{{2}}(?![a-z]))"  # Maya, O'Brien, McDonald, José, JD
+NAME_WORD = rf"(?:[A-Z]{{2}}(?![A-Za-z])|{CAP}(?!{CAP}){LOWER}*(?:['’]{CAP}?{LOWER}+|{CAP}{LOWER}+)*)"  # JD, Maya, O'Brien, McDonald, José
 PARTICLE = r"(?:de|la|del|da|di|van|von|der|le|du|bin|al)"
 NAME = rf"{TITLE}({NAME_WORD}(?:[ -](?:{PARTICLE} )*{NAME_WORD}){{0,2}})"
 DESCRIPTOR = r"(?:(?:the |a |an )?(?:[A-Z]{2,}|[A-Z][a-z]+) (?:founder|cofounder|co-founder|alum|alumna|alumnus|ceo|cto|exec|engineer) )"
@@ -109,13 +114,16 @@ VERBS = (r"(?:met up with|catching up with|caught up with|met with|met|meeting w
 UNITS = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mm": 1e6, "mn": 1e6, "million": 1e6, "b": 1e9, "bn": 1e9, "billion": 1e9}
 MONEY = r"\$?\s?(?<![\d.,])([\d][\d.,]{0,15})\s*(k|thousand|mm|mn|m|million|bn|b|billion)?\b"  # bounded: no backtracking blowup
 SENTENCE_END = re.compile(r"(?<=[.!?])(?<!\bDr\.)(?<!\bMr\.)(?<!\bMs\.)(?<!\bMrs\.)(?<!\bMx\.)(?<!\bProf\.)(?<!\bSt\.)"
-                          r"(?<!\bvs\.)(?<!\be\.g\.)(?<!\bi\.e\.)(?<!\b[A-Z]\.)\s+|\n+")
+                          r"(?<!\bvs\.)(?<!\be\.g\.)(?<!\bi\.e\.)(?<!\b[A-Z]\.)(?<!\bInc\.)(?<!\bCorp\.)(?<!\bLtd\.)"
+                          r"(?<!\bJr\.)(?<!\bSr\.)(?<!\b[ap]\.m\.)(?<!\b(?:Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.)"
+                          r"(?<!\bSept\.)\s+|\n+")
 MINE = re.compile(r"\b(i'll|i will|i need to|i should|i'm going to|i am going to|i want to|we'll|we will|we need to|"
                   r"let's|follow up|follow-up|remind me|check in|check back|circle back|touch base|reconnect)\b", re.I)
 DONE = re.compile(r"\b(sent|done|followed up|introduced|booked|scheduled|wrapped up|finished|completed)\b", re.I)
 # The investor's own finished step: "Sent Maya the deck", "I introduced her to Cara", "Done:" (not "She booked $25k MRR").
 MY_DONE = re.compile(r"^(?:i(?:'ve| have)?\s+|we(?:'ve| have)?\s+|just\s+|already\s+)?(?:sent|followed up|introduced|booked|"
-                     r"scheduled|finished|completed|intro'd|emailed|pinged)\b|^done\b|\b(?:is|it's|that's|all) done\b", re.I)
+                     r"scheduled|finished|completed|intro'd|emailed|pinged)\b|^done\b|^(?:that's|it's|that is|it is|all)\s+done\b|"
+                     r"(?:^|[,;:]\s*)done[.!]?$", re.I)
 ACTION = re.compile(r"\b(send|intro|introduce|schedule|set up|loop in|book|get (?:him|her|them)|reach out|ping|email)\b", re.I)
 
 
@@ -168,62 +176,90 @@ def next_step_of(text: str, founder: str | None = None) -> str | None:
     who = r"he|she|they|her team|his team|their team|the founder|the team"
     if founder:
         who += "|" + re.escape(founder.split()[0])
-    theirs = re.compile(rf"^(?:{who})\s+(?:will|'ll|is going to|are going to|plans? to|promised to|wants? to|is|are)\b", re.I)
+    plan = r"(?:will|'ll|is going to|are going to|plans? to|promised to|wants? to)\s+(?:also\s+)?"
+    # The founder's own plan: "She will send us the data room", "Maya is going to intro us" (not "She has a lead, so...").
+    theirs = re.compile(rf"(?:^|\b)(?:{who})\s+{plan}$", re.I)
 
     def open_from(sentence: str, rx: re.Pattern) -> str | None:
-        m = rx.search(sentence)
-        if not m or DONE.search(sentence[m.start():]):
-            return None  # "Sent Priya the intro, done" is not a next step
-        return _clause(sentence, rx)
+        for m in rx.finditer(sentence):
+            if rx is ACTION and theirs.search(sentence[:m.start()]):
+                continue  # "he will send us the data room"
+            if DONE.search(sentence[m.start():]):
+                return None  # "Sent Priya the intro, done" is not a next step
+            return _clause(sentence, m.start())
+        return None
 
     for rx in (MINE, ACTION):
         for sent in sentences:
-            if rx is ACTION and theirs.search(sent):
-                continue
             step = open_from(sent, rx)
             if step:
                 return step
     return None
 
 
-def _clause(sentence: str, start_at: re.Pattern | None = None) -> str:
+def _clause(sentence: str, start: int | None = None) -> str:
+    """The step itself, from where it starts when the sentence is long or opens with the meeting ("just met sam today
+    ... send him the deck friday" -> "send him the deck friday")."""
     words = sentence.strip().rstrip(".!?").split()
-    if start_at is not None and (len(words) > 22 or re.match(rf"\s*(?i:{VERBS})\b", sentence)):
-        m = start_at.search(sentence)  # "met sam today ... I need to follow up friday" -> "I need to follow up friday"
-        words = sentence[m.start():].rstrip(".!?").split() if m else words
+    if start is not None:
+        v = re.search(rf"\b(?i:{VERBS})\b", sentence)
+        if len(words) > 22 or (v and v.start() < start):
+            words = sentence[start:].rstrip(".!?").split()
     return " ".join(words[:22])[:160]
+
+
+_STOPS = "|".join(sorted(map(re.escape, STOP | set(WEEKDAYS) | set(MONTHS)), key=len, reverse=True))
+_WHEN = "|".join(WEEKDAYS + ["today", "yesterday", "earlier", "quickly", "briefly", "virtually", "online"])
+
+
+def _date_word(cand: str, after: str) -> bool:
+    """"Monday" or "May" alone, not followed by "from"/"of"/"(", is a day; "April Chen" or "May from Kite" is a name."""
+    first = cand.split()[0].lower()
+    return first in STOP or (first in set(WEEKDAYS) | set(MONTHS) and len(cand.split()) == 1
+                             and not re.match(r"\s*(?:from\b|of\b|\()", after))
 
 
 def _founder_in(text: str, low: str) -> str | None:
     """Who they met. Capitalized names after a meeting verb (skipping "YC founder", titles and day words), else, for
-    all-lowercase dictation, one or two words after the verb that are followed by "from", "(", "at", a comma or the end."""
+    all-lowercase dictation, one or two words after the verb."""
     for m in re.finditer(rf"\b(?i:{VERBS})\s+(?i:the founder |founder )?{DESCRIPTOR}?{NAME}", text):
         cand = m.group(1)
-        if cand.split()[0].lower() not in STOP | set(WEEKDAYS) | set(MONTHS):
+        if not _date_word(cand, text[m.end():]):
             return cand
         w = re.match(rf"\s*(?:\w+\s+){{0,3}}?(?i:with)\s+{DESCRIPTOR}?{NAME}", text[m.end():])  # "Met Monday with Maya Okafor"
-        if w and w.group(1).split()[0].lower() not in STOP | set(WEEKDAYS) | set(MONTHS):
+        if w and not _date_word(w.group(1), text[m.end() + w.end():]):
             return w.group(1)
-    m = re.search(rf"\b{VERBS}\s+(?:the founder |founder |(?:dr|mr|mrs|ms|prof)\.? )?([a-zà-ÿ'’]+)(?:\s+([a-zà-ÿ'’]+))?"
-                  r"(?=\s*(?:\bfrom\b|\(|\bat\b|,|\.|;|\bwho\b|\bof\b|$))", low)
-    if not m or m.group(1) in STOP | set(WEEKDAYS) | set(MONTHS):
-        return None
-    words = [m.group(1)] + ([m.group(2)] if m.group(2) and m.group(2) not in STOP | set(WEEKDAYS) | set(MONTHS) else [])
-    if m.group(2) and len(words) == 1:
-        return None  # "met maya last week": not sure "maya" is the whole name, and the second word isn't a name
-    return " ".join(w.capitalize() for w in words)
+    word = rf"(?!(?:{_STOPS})\b)([a-zà-ÿ'’]+)"  # a word that isn't a common, number or time word
+    m = re.search(rf"\b{VERBS}\s+(?:(?:on |last |this )?(?:{_WHEN})(?: morning| afternoon| evening| night)? with )?"
+                  rf"(?:the founder |founder |(?:dr|mr|mrs|ms|prof)\.? )?{word}"
+                  # two words, then punctuation or any common word: "met raj patel today", "maya okafor she is..."
+                  rf"(?:\s+{word}(?=\s*(?:[(,.;:!?]|$|\b(?:{_STOPS}|over|re)\b))"
+                  # one word only before "from", "at", a comma, the end, or when they met: "met maya today"
+                  rf"|(?=\s*(?:[(,.;]|$|\b(?:from|at|who|of|and|he|she|they|is|was|about|{'|'.join(sorted(TIME_WORDS))})\b)))", low)
+    return " ".join(x.capitalize() for x in m.groups() if x) if m else None
 
 
 EVENT_CORE = r"(?:hackathon|conference|summit|meetup|demo day|dinner|breakfast|lunch|happy hour|event|panel|mixer|party|offsite|expo|retreat)"
 NOT_PAST = r"(?!-)(?!\s+(?i:next|tomorrow|tonight|sometime|soon|this|later|on \w+day))"
 
 
+PAST = re.compile(r"\b(?:met|caught up|talked|spoke|chatted|ran into|had (?:a )?(?:coffee|lunch|dinner|drinks|chat|call))\b", re.I)
+SOON = r"(?!-)(?!\s+(?i:next|tomorrow|sometime|soon)\b)"  # after "met", "on Saturday" or "this morning" is when they met
+
+
 def _event_in(text: str, low: str) -> str | None:
-    m = re.search(rf"\b(?i:at) (?:the |a |an )?((?:[A-Z0-9][\w'&-]*\s){{0,4}}(?i:{EVENT_CORE})|(?:[A-Z0-9][\w'&-]*\s){{1,4}}"
-                  rf"(?i:week|fair)|(?i:career|job|trade|science|startup) fair)\b{NOT_PAST}", text)
-    if not m and text == low:  # all-lowercase dictation
-        m = re.search(rf"\bat (?:the |a |an )?((?:[a-z0-9][\w'&-]*\s){{0,3}}{EVENT_CORE})\b{NOT_PAST}", low)
-    return m.group(1).strip() if m else None
+    """Where they met: "at the Deal Flow hackathon", "at Climate Week", "at the founders dinner" (not "at a fair price",
+    "at lunch next week" or "at some point")."""
+    mods = 3 if text == low else 2  # lowercase words before the event word ("deal flow hackathon")
+    mod = rf"(?:(?!(?:the|a|an|some|this|that|my|our|his|her|their|point|stage)\s)[a-z][\w'&-]*\s){{0,{mods}}}"
+    for m in re.finditer(r"\b(?i:at) (?:the |a |an )?", text):
+        start = max(text.rfind(".", 0, m.start()), text.rfind("\n", 0, m.start())) + 1
+        tail = SOON if PAST.search(text[start:m.start()]) else NOT_PAST
+        e = re.match(rf"((?:[A-Z0-9][\w'&-]*\s){{0,4}}{mod}(?i:{EVENT_CORE})|(?:[A-Z0-9][\w'&-]*\s){{1,4}}(?i:week|fair)|"
+                     rf"(?i:career|job|trade|science|startup) fair)\b{tail}", text[m.end():])
+        if e:
+            return e.group(1).strip()
+    return None
 
 
 def heuristic_note(text: str, today: dt.date) -> dict:
@@ -264,6 +300,11 @@ def heuristic_note(text: str, today: dt.date) -> dict:
     ext["background"] = [k for k in TECH_KEYWORDS if has_word(low, [k])][:3]
     ext["next_step"] = next_step_of(text, ext["founder"])
     ext["next_due"] = due_from(ext["next_step"], today) if ext["next_step"] else None
+    if ext["next_step"] and not ext["next_due"]:
+        sents = [x.strip() for x in SENTENCE_END.split(text) if x and x.strip()]
+        at = next((i for i, x in enumerate(sents) if ext["next_step"][:40] in x), None)
+        if at is not None and at + 1 < len(sents) and re.match(r"(?:ideally )?(?:by|due|before|on)\b", sents[at + 1], re.I):
+            ext["next_due"] = due_from(sents[at + 1], today)
     if not ext["next_step"]:
         ext["step_done"] = any(MY_DONE.search(x.strip()) for x in SENTENCE_END.split(text) if x and x.strip())
     return ext
@@ -285,15 +326,19 @@ def route_rules(text: str) -> dict:
     if (m := match(r"(?:look ?up|search(?: akta(?:\.pro)?)?(?: for)?|research|check out|tell me about)\s+(.+?)(?: on akta(?:\.pro)?)?$")) \
             and not re.search(r"\b(founders?|startups?|companies)\b", m.group(1), flags=re.I):
         return {"intent": "lookup", "query": m.group(1)}
-    if m := match(r"(?:source|find|look for|search for|discover|show me|get me|suggest|recommend|scout)\b"
-                  r"(?:\s+(?:me|some|new|more|a few|good|great|promising|early[- ]stage|interesting))*"
-                  r"(?:\s+(.+?))?\s+(?:founders?|startups?|companies|teams)\b"
-                  r"(?:\s+(?:in|for|doing|working on|building|around|focused on|within|on)\s+(.+))?$"):
-        return {"intent": "source", "query": " ".join(x for x in (m.group(1), m.group(2)) if x)}
     q = t.lower()
     if match(r"(?:rank|score|prioriti[sz]e) (?:my |the )?(?:founders|startups|companies|pipeline)$|rank$") or \
             re.search(r"^(?:show )?(?:me )?my (?:best )?founders$|^(?:who are )?my best founders$|^who should i (meet|back|call)", q):
         return {"intent": "rank", "query": ""}
+    if re.search(r"^(?:show|find|list|get|see)(?: me)? (?:all )?(?:my|our|the) (?:founders|startups|companies|pipeline|people)$", q):
+        return {"intent": "conversations", "query": ""}
+    # "Show me my founders" is the user's own founders, never a search for new ones.
+    if (m := match(r"(?:source|find|look for|search for|discover|show me|get me|suggest|recommend|scout)\b"
+                  r"(?:\s+(?:me|some|new|more|a few|good|great|promising|early[- ]stage|interesting))*"
+                  r"(?:\s+(.+?))?\s+(?:founders?|startups?|companies|teams)\b"
+                  r"(?:\s+(?:in|for|doing|working on|building|around|focused on|within|on)\s+(.+))?$")) \
+            and not re.match(r"(?:my|our|the|these|those|his|her|their)\b", m.group(1) or "", flags=re.I):
+        return {"intent": "source", "query": " ".join(x for x in (m.group(1), m.group(2)) if x)}
     if re.search(r"^who (have|am) i (been )?talk|^who did i meet|^(show )?(me )?my conversations$|^what('s| is) next$|"
                  r"^(my |show )?(me )?(my )?follow[- ]?ups?$|^what do i owe|^(what|who)('s| is) (overdue|due)", q):
         return {"intent": "conversations", "query": ""}
@@ -301,9 +346,11 @@ def route_rules(text: str) -> dict:
         return {"intent": "team", "query": ""}
     if re.match(r"^(help|what can you do)$", q):
         return {"intent": "help", "query": ""}
+    # Dictated questions often have no "?": "did jonah reply", "is patchbay raising", "which founders did i meet at yc".
     if text.strip().endswith("?") or re.match(
-            r"^(?:did|do|does|have|has|am|is|are|was|were|can|could|should|would|will) (?:i|we|you|anyone|they|he|she|it)\b|"
-            r"^(?:what|when|where|which|why|how|who) (?:did|do|does|is|are|was|were|have|has|should|can|could|would|will)\b", q):
+            r"^(?:did|do|does|am|is|are|can|could|should|would|will|have|has)\s+(?!to\b)\w+|"
+            r"^(?:was|were) (?:i|we|you|anyone|they|he|she|it)\b|^(?:what|when|where|which|why|how)\b|"
+            r"^who\b(?! i met| we met)", q):
         return {"intent": "help", "query": ""}  # an unanswered question is never saved into the shared notes
     return {"intent": "save_note", "query": ""}
 
@@ -370,8 +417,14 @@ def features(ext: dict, member: dict) -> dict:
     sector = (ext.get("sector") or "").lower()
     stage = (ext.get("stage") or "").lower()
     # An unknown or "other" sector is not "outside the thesis": the note just didn't say. Score it halfway.
+    # Focus words outside the known sectors ("robotics") count when the sector or one-liner says them.
     known = {"ai", "devtools", "fintech", "consumer", "cpg", "climate", "health"}
-    thesis = 0.5 if sector not in known else 1.0 if sector in member["sectors"] else 0.0
+    about = f"{sector} {ext.get('one_liner') or ''}".lower()
+    stems = [w[:-3] if len(w) > 6 and w.endswith(("ics", "ing")) else w for w in member.get("extra_focus") or []]
+    if any(re.search(rf"\b{re.escape(w)}", about) for w in stems):
+        thesis = 1.0
+    else:
+        thesis = 0.5 if sector not in known else 1.0 if sector in member["sectors"] else 0.0
     if stage and stage not in member["stages"]:
         thesis *= 0.5
     m = ext.get("metrics") or {}

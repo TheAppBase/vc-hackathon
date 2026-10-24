@@ -144,7 +144,10 @@ def local_today() -> dt.date:
 
 
 def nice_date(iso: str) -> str:
-    return local_dt(iso).strftime("%a %b %d").replace(" 0", " ")
+    s = str(iso)
+    # A date alone ("2026-10-30", a due date) is already the user's own day; only timestamps move to their time zone.
+    d = dt.date.fromisoformat(s) if len(s) == 10 else local_dt(s)
+    return d.strftime("%a %b %d").replace(" 0", " ")
 
 
 # --------------------------------------------------------------------------- users
@@ -153,16 +156,36 @@ def norm(u) -> str:
 
 
 def load_user(u: str) -> dict | None:
-    return store.get(f"users/{u}.json") if USER_RE.match(u or "") else None
+    """The account plus its password hash and version, which live in their own blob (auth/<username>.json): only sign-up
+    and a password change write it, so a settings, team or profile save can never undo a password change."""
+    if not USER_RE.match(u or ""):
+        return None
+    user, auth = store.get_many([f"users/{u}.json", f"auth/{u}.json"])
+    if not user:
+        return None
+    if auth:
+        user.update(password=auth.get("password"), pw_ver=auth.get("pw_ver", 0), _auth=True)
+    elif user.get("password"):  # an account from before passwords had their own blob: move it there
+        with contextlib.suppress(Exception):
+            store.put(f"auth/{u}.json", {"password": user["password"], "pw_ver": user.get("pw_ver", 0)}, overwrite=False)
+            user["_auth"] = True
+    return user
 
 
 def save_user(user: dict):
-    """Write the account. If the stored copy has a newer password (changed meanwhile on another device), keep it: a
-    request that loaded the account earlier must never undo a password change."""
-    stored = store.get(f"users/{user['username']}.json")
-    if stored and stored.get("pw_ver", 0) > user.get("pw_ver", 0):
-        user = {**user, "password": stored.get("password"), "pw_ver": stored["pw_ver"]}
-    store.put(f"users/{user['username']}.json", user)
+    """Write the account (name, profile, team, settings). The password is never written here."""
+    drop = ("_auth",) + (("password", "pw_ver") if user.get("_auth") else ())  # without its own blob yet, keep it here
+    store.put(f"users/{user['username']}.json", {k: v for k, v in user.items() if k not in drop})
+
+
+def save_password(user: dict, pw: str):
+    """Set a new password. The version goes up, which signs out every other device."""
+    path = f"auth/{user['username']}.json"
+    cur = store.get(path) or {}
+    user["password"] = generate_password_hash(pw)
+    user["pw_ver"] = max(user.get("pw_ver", 0), cur.get("pw_ver", 0)) + 1
+    store.put(path, {"password": user["password"], "pw_ver": user["pw_ver"]})
+    user["_auth"] = True
 
 
 def mode_of(user: dict) -> str:
@@ -192,7 +215,8 @@ def current() -> dict | None:
 
 
 def chat_sid(user: dict) -> str:
-    """The PRISM session id: one per open chat (the browser sends X-Chat-Id, made once per page load)."""
+    """The PRISM session id: one per open tab (the browser sends X-Chat-Id, new on each page load and after 30 minutes
+    idle), so each conversation is its own PRISM session."""
     cid = request.headers.get("X-Chat-Id", "")
     if re.fullmatch(r"[A-Za-z0-9-]{8,40}", cid):
         return f"lt-{user['username']}-{cid[:12]}"
@@ -205,7 +229,7 @@ def start_session(user: dict):
     session.permanent = True
     session["u"] = u
     session["pv"] = user.get("pw_ver", 0)
-    session["sid"] = f"lt-{u}-{secrets.token_hex(6)}"  # one PRISM session per sign-in, so traces group into a conversation
+    session["sid"] = f"lt-{u}-{secrets.token_hex(6)}"  # PRISM session when the browser sends no X-Chat-Id
 
 
 def login_required(fn):
@@ -255,6 +279,21 @@ def _error(e):
 
 
 # --------------------------------------------------------------------------- profile
+FOCUS_FILLER = {"and", "or", "plus", "the", "a", "an", "in", "of", "on", "to", "for", "with", "mostly", "mainly",
+                "seed", "pre", "preseed", "pre-seed", "series", "b", "c", "stage", "stages", "early", "earlier", "late", "later",
+                "growth", "idea", "generalist", "agnostic", "sector", "sectors", "startups", "startup", "companies", "company",
+                "founders", "anything", "everything", "all", "any", "etc", "focus", "invest", "i", "we", "tech", "technology"}
+
+
+def extra_focus(focus: str) -> list[str]:
+    """Focus words outside the known sectors ("robotics", "edtech"), so they count as the person's thesis."""
+    words = re.findall(r"[a-z][a-z0-9+&-]*", focus.lower())
+    known = ("devtool", "dev tool", "infra", "developer", "consumer", "cpg", "brand", "food", "retail", "fintech", "payments",
+             "finance", "climate", "health")
+    return list(dict.fromkeys(w for w in words if w not in FOCUS_FILLER and w != "ai" and len(w) > 1
+                              and not any(k in w for k in known)))[:6]
+
+
 def build_profile(a: dict, name: str) -> dict:
     focus = str(a.get("focus") or "")
     fl = focus.lower()
@@ -268,7 +307,8 @@ def build_profile(a: dict, name: str) -> dict:
     for k in ("climate", "health"):
         if k in fl:
             sectors.append(k)
-    sectors = sectors or list(ALL_SECTORS)
+    extra = extra_focus(focus)
+    sectors = sectors or ([] if extra else list(ALL_SECTORS))  # "robotics and edtech" is a focus, not "everything"
     stages = ["seed"]
     if "pre-seed" in fl or "preseed" in fl:
         stages = ["pre-seed", "seed"]
@@ -288,29 +328,32 @@ def build_profile(a: dict, name: str) -> dict:
     w = WEIGHTS[style]
     return {
         "name": name, "first": first(name), "role": str(a.get("role") or "Investor")[:80], "focus": focus[:80] or "Generalist",
-        "sectors": sectors, "stages": stages, "signal": str(a.get("signal") or "")[:100], "style": style, "weights": w,
+        "sectors": sectors, "extra_focus": extra, "stages": stages, "signal": str(a.get("signal") or "")[:100], "style": style, "weights": w,
         "nos": str(a.get("nos") or "No hard no's")[:80],
         "weights_text": ", ".join(f"{LABEL[k]} {v}%" for k, v in sorted(w.items(), key=lambda kv: -kv[1]) if v),
     }
 
 
 # --------------------------------------------------------------------------- notes -> founders
-def redact_fields(fields: dict) -> dict:
-    """Secrets must not survive in any extracted field either (next step, background, one-liner...)."""
-    out = {}
-    for k, v in fields.items():
-        if isinstance(v, str):
-            v = guard.redact(v)[0]
-        elif isinstance(v, list):
-            v = [guard.redact(x)[0] if isinstance(x, str) else x for x in v]
-        out[k] = v
-    return out
+def redact_fields(fields: dict, found: list | None = None) -> dict:
+    """Secrets must not survive in any extracted field either (next step, background, one-liner...). What was removed
+    is added to `found`."""
+    found = found if found is not None else []
+
+    def clean(x):
+        if not isinstance(x, str):
+            return x
+        x, why = guard.redact(x)
+        found.extend(why)
+        return x
+
+    return {k: [clean(x) for x in v] if isinstance(v, list) else clean(v) for k, v in fields.items()}
 
 
-def extract(user: dict, text: str, when: dt.date) -> tuple[dict, str, str]:
+def extract(user: dict, text: str, when: dt.date) -> tuple[dict, str, str, list[str]]:
     """Rewrite a note professionally and read the founder, company, event and next step out of it.
 
-    Returns (fields, reader, rewritten). Nicrron when configured; otherwise keyword rules and a light tidy-up. The AI sees
+    Returns (fields, reader, rewritten, secrets the AI's output still had and that were removed). Nicrron when configured; otherwise keyword rules and a light tidy-up. The AI sees
     the whole note; a rewrite that is far shorter than the note (facts dropped) or far longer is not used."""
     if ix.LLM_CLIENT.live:
         name, aid = agent_of(user)
@@ -321,8 +364,9 @@ def extract(user: dict, text: str, when: dt.date) -> tuple[dict, str, str]:
             rewritten = str(got.pop("note", "") or "").strip()
             if not rewritten or len(rewritten) > 2 * len(text) + 300 or (len(text) > 200 and len(rewritten) < 0.4 * len(text)):
                 rewritten = engine.tidy(text)
-            return redact_fields(engine.clean_note(got)), "Nicrron", guard.redact(rewritten)[0]
-    return redact_fields(engine.clean_note(engine.heuristic_note(text, when))), "keyword rules", engine.tidy(text)
+            rewritten, found = guard.redact(rewritten)
+            return redact_fields(engine.clean_note(got), found), "Nicrron", rewritten, found
+    return redact_fields(engine.clean_note(engine.heuristic_note(text, when))), "keyword rules", engine.tidy(text), []
 
 
 ROUTES = {"save_note", "conversations", "rank", "source", "lookup", "who_knows", "team", "help", "chat"}
@@ -435,6 +479,8 @@ def founders_from(notes: list[dict]) -> list[dict]:
                 continue
             if is_company and fk and r.get("founder") and not same_person(_key(r["founder"]), fk):
                 continue
+            if not is_company and ck and " " not in fk and r.get("company") and _key(r["company"]) != ck:
+                continue  # "Maya from Kite" is not the "Maya" from Quillstack
             hits.append(r)
         if not hits:
             rec = {**engine.EMPTY_NOTE, "metrics": {}, "background": [], "notes": [], "first_met": n.get("created_at"),
@@ -464,7 +510,8 @@ def founders_from(notes: list[dict]) -> list[dict]:
         elif x.get("step_done"):
             rec["next_step"], rec["next_due"] = None, None
         rec["last_touch"] = max(rec.get("last_touch") or "", n.get("created_at") or "")
-        rec["notes"].append({"id": n.get("id"), "text": n.get("text", ""), "created_at": n.get("created_at")})
+        rec["notes"].append({"id": n.get("id"), "text": n.get("text", ""), "original": n.get("original"),
+                             "created_at": n.get("created_at")})
         if n.get("akta"):
             rec["akta"] = n["akta"]
     for rec in recs:
@@ -559,7 +606,7 @@ def who_knows(mem: list[dict], names: list[str]) -> list[dict]:
                 break
         if not hit:
             for n in mate["notes"]:
-                low = _key(n.get("text"))
+                low = _key(f"{n.get('text')} {n.get('original') or ''}")
                 if any(re.search(rf"\b{re.escape(k)}\b", low) for k in keys if " " in k or len(keys) == 1):
                     hit = {"who": mate["first"], "username": mate["username"], "sure": False,
                            "text": f"{mate['first']}'s note from {nice_date(n['created_at'])} mentions it: \"{n['text'][:220]}\""}
@@ -594,7 +641,8 @@ def api_note_save(user):
     if not raw:
         return jsonify({"error": "Empty note"}), 400
     original, redacted = guard.redact(raw[:guard.MAX_NOTE])
-    extracted, reader, text = extract(user, original, local_today())
+    extracted, reader, text, also = extract(user, original, local_today())
+    redacted = list(dict.fromkeys(redacted + also))
     mode = mode_of(user)
     act = {"id": new_id(), "type": "save_note", "mode": mode, "created_at": now(), "summary": "Save a note to the firm memory",
            "payload": {"text": text, "original": original, "source": "dictation" if p.get("source") == "dictation" else "typed",
@@ -614,7 +662,7 @@ def api_note_save(user):
         if ix.AKTA.live and extracted.get("company"):
             t1, ix.AKTA.error = time.time(), None
             try:  # enrichment must never stop a note from saving
-                note["akta"] = ix.AKTA.lookup(extracted["company"])  # free Company Search only; no credits per note
+                note["akta"] = ix.AKTA.lookup(extracted["company"], timeout=6)  # free Company Search; no credits per note
             except Exception as e:
                 ix.AKTA.error, note["akta"] = scrub(f"akta.pro lookup failed: {e}")[:200], None
             trace_tool(user, "akta.lookup", extracted["company"], json.dumps(note.get("akta"))[:500], t1,
@@ -649,7 +697,7 @@ def api_note_save(user):
 
 
 def view(act: dict) -> dict:
-    out = {k: act.get(k) for k in ("id", "type", "summary", "payload", "status", "reason", "review", "result", "mode",
+    out = {k: act.get(k) for k in ("id", "type", "summary", "payload", "status", "reason", "review", "mode",
                                    "created_at", "redacted", "truncated", "akta", "roundtable")}
     if out.get("review"):
         out["review"] = {k: v for k, v in out["review"].items() if k != "raw"}  # the raw evaluation stays in the log
@@ -681,12 +729,8 @@ def password_problem(pw: str) -> str | None:
     return None
 
 
-def set_password(user: dict, pw: str):
-    user["password"] = generate_password_hash(pw)
-    user["pw_ver"] = user.get("pw_ver", 0) + 1
-
-
-TRIES_PER_MINUTE = 6  # per account, across all devices
+TRIES_PER_MINUTE = 6  # per account, from devices that have never signed in to it
+DEVICE_COOKIE = "lt_device"
 
 
 def client_key() -> str:
@@ -695,46 +739,80 @@ def client_key() -> str:
     return hashlib.sha256(("lt-ip:" + ip).encode()).hexdigest()[:16]
 
 
-def _reserve(path: str, t: float) -> bool:
-    """Create the reservation blob; a leftover one older than ATTEMPT_SECONDS (its request died) is replaced."""
+def _device_signer():
+    from itsdangerous import URLSafeTimedSerializer
+
+    app.session_interface.get_signing_serializer(app)  # makes sure the shared signing key is loaded
+    return URLSafeTimedSerializer(app.secret_key, salt="lt-device") if app.secret_key else None
+
+
+def _device() -> dict:
+    s = _device_signer()
     try:
-        store.put(path, {"t": t}, overwrite=False)
-        return True
-    except store.Exists:
-        cur = store.get(path) or {}
-        if t - cur.get("t", 0) < ATTEMPT_SECONDS:
-            return False
-        store.delete(path)
+        d = s.loads(request.cookies.get(DEVICE_COOKIE, ""), max_age=365 * 86400) if s else {}
+    except Exception:
+        return {}
+    return d if isinstance(d, dict) and isinstance(d.get("id"), str) else {}
+
+
+def known_device(u: str) -> str | None:
+    """This browser's id if it has signed in to @u before (a signed cookie set at sign-in), so strangers' tries on the
+    account never use up the owner's tries."""
+    d = _device()
+    return d["id"] if u in (d.get("users") or []) else None
+
+
+def remember_device(resp, u: str):
+    s = _device_signer()
+    if not s:
+        return resp
+    d = _device()
+    users = [x for x in d.get("users") or [] if x != u][-4:] + [u]
+    resp.set_cookie(DEVICE_COOKIE, s.dumps({"id": d.get("id") or secrets.token_hex(8), "users": users}), max_age=365 * 86400,
+                    httponly=True, samesite="Lax", secure=bool(os.getenv("VERCEL")))
+    return resp
+
+
+def _reserve(path: str, t: float) -> bool:
+    """Create the reservation blob. Every try deletes its own after ATTEMPT_SECONDS; one much older than that belongs to
+    a request that died, and only then is it replaced (deleting a live one would let two tries through at once)."""
+    for _ in range(2):
         try:
             store.put(path, {"t": t}, overwrite=False)
             return True
         except store.Exists:
-            return False
+            cur = store.get(path)
+            if cur is None:
+                continue  # its holder just finished: try once more
+            if t - cur.get("t", 0) < 3 * ATTEMPT_SECONDS:
+                return False
+            store.delete(path)
+    return False
 
 
-def claim_attempt(u: str, slot: str, per_account: bool = True) -> int:
-    """Reserve one password try for this username from this device (or session) for ATTEMPT_SECONDS, and, for sign-in,
-    one of the account's TRIES_PER_MINUTE. Returns 0 if reserved, else seconds to wait. Reservations are blobs created
-    with overwrite=False, so many requests sent at once still get one try, and a stranger's tries never use up the
-    owner's device slot."""
+def claim_attempt(u: str, slot: str, per_account: bool = True) -> tuple[int, str]:
+    """Reserve one password try for this username from this device (or session) for ATTEMPT_SECONDS, and, for sign-in
+    from an unknown device, one of the account's TRIES_PER_MINUTE. Returns (0, "") if reserved, else (seconds to wait,
+    "device" or "account"). Reservations are blobs created with overwrite=False, so many requests sent at once still get
+    one try."""
     t = time.time()
     path = f"attempts/{u}/{slot}.json"
     if not _reserve(path, t):
-        cur = store.get(path) or {"t": t}
-        return max(1, math.ceil(ATTEMPT_SECONDS - (t - cur.get("t", t))))
+        age = t - (store.get(path) or {"t": t}).get("t", t)
+        return max(1, math.ceil((ATTEMPT_SECONDS if age < ATTEMPT_SECONDS + 2 else 3 * ATTEMPT_SECONDS) - age)), "device"
     g.attempt = path
     if per_account:
         minute = int(t // 60)
         for k in range(TRIES_PER_MINUTE):
             try:
                 store.put(f"attempts/{u}/m{minute}-{k}.json", {"t": t}, overwrite=False)
-                return 0
+                return 0, ""
             except store.Exists:
                 continue
         store.delete(path)
         g.attempt = None
-        return max(1, 60 - int(t % 60))
-    return 0
+        return max(1, 60 - int(t % 60)), "account"
+    return 0, ""
 
 
 def finish_attempt(started: float):
@@ -751,8 +829,10 @@ def finish_attempt(started: float):
                     store.delete(p)
 
 
-def too_soon(wait: int):
-    return jsonify({"error": f"One try every {ATTEMPT_SECONDS} seconds. Wait {wait}s and try again.", "retry_after": wait}), 429
+def too_soon(wait: int, why: str = "device"):
+    msg = (f"Too many sign-in tries on this account from other devices in the last minute. Wait {wait}s and try again."
+           if why == "account" else f"One try every {ATTEMPT_SECONDS} seconds. Wait {wait}s and try again.")
+    return jsonify({"error": msg, "retry_after": wait}), 429
 
 
 @app.post("/api/signup")
@@ -766,36 +846,41 @@ def api_signup():
     if password_problem(pw):
         return jsonify({"error": password_problem(pw)}), 400
     user = {"username": u, "name": name, "created_at": now(), "team": [], "settings": {"mode": "ask"}}
-    set_password(user, pw)
     try:
-        store.put(f"users/{u}.json", user, overwrite=False)
+        store.put(f"users/{u}.json", user, overwrite=False)  # claims the username, even if two people sign up at once
     except store.Exists:
         return jsonify({"error": f"@{u} is taken."}), 409
+    try:
+        save_password(user, pw)
+    except Exception:
+        with contextlib.suppress(Exception):
+            store.delete(f"users/{u}.json")  # don't leave an account nobody can sign in to
+        raise
     start_session(user)
-    return jsonify({"user": public(user)})
+    return remember_device(jsonify({"user": public(user)}), u)
 
 
 @app.post("/api/signin")
 def api_signin():
+    started = time.time()
     b = request.get_json(silent=True) or {}
     u, pw = norm(b.get("username")), str(b.get("password") or "")
-    if not USER_RE.match(u):
-        return jsonify({"error": "Wrong username or password."}), 403
-    wait = claim_attempt(u, client_key())
-    if wait:
-        return too_soon(wait)
-    started = time.time()
-    try:
-        user = load_user(u)
-        if not user:
-            return jsonify({"error": "Wrong username or password."}), 403
-        if not user.get("password"):
-            # Accounts from before passwords can't be claimed with just a name (the name is visible to anyone).
+    user = load_user(u)
+    if not user or not user.get("password"):
+        # Nothing to guess, so nothing to reserve or write; it still takes as long as a real try.
+        time.sleep(max(0.0, ATTEMPT_SECONDS - (time.time() - started)))
+        if user:  # accounts from before passwords can't be claimed with just a name (the name is visible to anyone)
             return jsonify({"error": "This account was made before passwords existed. Create a new account."}), 403
+        return jsonify({"error": "Wrong username or password."}), 403
+    dev = known_device(u)
+    wait, why = claim_attempt(u, "d-" + dev, per_account=False) if dev else claim_attempt(u, client_key())
+    if wait:
+        return too_soon(wait, why)
+    try:
         if not check_password_hash(user["password"], pw):
             return jsonify({"error": "Wrong username or password."}), 403
         start_session(user)
-        return jsonify({"user": public(user)})
+        return remember_device(jsonify({"user": public(user)}), u)
     finally:
         finish_attempt(started)
 
@@ -807,16 +892,16 @@ def api_password(user):
     pw = str(b.get("new") or "")
     if password_problem(pw):
         return jsonify({"error": password_problem(pw)}), 400
-    # Keyed to this signed-in session, so strangers' sign-in tries never block the owner from changing the password.
-    wait = claim_attempt(user["username"], "s-" + hashlib.sha256(chat_sid(user).encode()).hexdigest()[:16], per_account=False)
+    # Keyed to this signed-in session (an id the server put in the signed cookie), so strangers' sign-in tries never block
+    # the owner, and a stolen cookie still gets only one guess at the current password every 10 seconds.
+    wait, why = claim_attempt(user["username"], "s-" + hashlib.sha256(session["sid"].encode()).hexdigest()[:16], per_account=False)
     if wait:
-        return too_soon(wait)
+        return too_soon(wait, why)
     started = time.time()
     try:
         if user.get("password") and not check_password_hash(user["password"], str(b.get("current") or "")):
             return jsonify({"error": "Your current password is wrong."}), 403
-        set_password(user, pw)
-        save_user(user)
+        save_password(user, pw)
         trace_tool(user, "change_password", "(hidden)", "changed", started)
         start_session(user)  # keep this device signed in; every other device is signed out
         return jsonify({"ok": True})
@@ -861,7 +946,8 @@ def api_settings(user):
     b = request.get_json(silent=True) or {}
     if b.get("mode") in ("ask", "auto"):
         if b["mode"] == "auto" and not guard.live():
-            return jsonify({"error": "Auto mode needs PRISM (PRISMTRACE_API_KEY on the server)."}), 400
+            return jsonify({"error": f"Auto mode needs PRISM, which couldn't start: {ix.TRACER.error}" if ix.TRACER.key else
+                            "Auto mode needs PRISM (PRISMTRACE_API_KEY on the server)."}), 400
         user.setdefault("settings", {})["mode"] = b["mode"]
         save_user(user)
         trace_tool(user, "set_mode", b["mode"], "Auto mode: PRISM watches the agent", time.time())
@@ -898,7 +984,7 @@ def hard_no(profile: dict, rec: dict) -> str | None:
     """The user's hard no's from the interview, checked against what their notes and akta.pro say."""
     nos = (profile.get("nos") or "").lower()
     ak = rec.get("akta") or {}
-    text = " ".join([n["text"] for n in rec.get("notes", [])] + [str(rec.get("one_liner") or ""),
+    text = " ".join([f"{n['text']} {n.get('original') or ''}" for n in rec.get("notes", [])] + [str(rec.get("one_liner") or ""),
                     str((ak.get("industry") or {}).get("name") or ""), str((ak.get("match") or {}).get("description") or "")]).lower()
     if ("crypto" in nos or "token" in nos) and re.search(r"\b(crypto|cryptocurrency|web3|blockchain|nfts?|defi|ico|"
                                                          r"token (?:sale|presale|launch|raise|generation event)|tokenomics|memecoin)\b", text):
@@ -912,22 +998,31 @@ AKTA_PAID_PER_DAY = int(env("AKTA_PAID_PER_DAY", default="30") or 30)
 AKTA_PAID_FIRM_PER_DAY = int(env("AKTA_PAID_FIRM_PER_DAY", default="300") or 300)
 
 
-def _take_slot(prefix: str, cap: int) -> bool:
-    """Claim one of `cap` numbered slots (blobs created with overwrite=False), so parallel calls can't overshoot."""
+def _take_slot(prefix: str, cap: int) -> str | None:
+    """Claim one of `cap` numbered slots (blobs created with overwrite=False), so parallel calls can't overshoot.
+    Returns the slot's path, or None when all are taken."""
     used = len(store.list_paths(prefix))
     for n in range(used, cap):
         try:
             store.put(f"{prefix}{n}.json", {"t": time.time()}, overwrite=False)
-            return True
+            return f"{prefix}{n}.json"
         except store.Exists:
             continue
-    return False
+    return None
 
 
 def paid_ok(user: dict) -> bool:
-    """Paid akta.pro calls per person and for the whole firm per day (server's UTC date: the browser can't reset it)."""
+    """Paid akta.pro calls per person and for the whole firm per day (server's UTC date: the browser can't reset it).
+    The person's own cap is checked first, so someone over it never uses up the firm's."""
     day = dt.datetime.now(dt.timezone.utc).date().isoformat()
-    return _take_slot(f"usage/firm/{day}/", AKTA_PAID_FIRM_PER_DAY) and _take_slot(f"usage/{user['username']}/{day}/", AKTA_PAID_PER_DAY)
+    mine = _take_slot(f"usage/{user['username']}/{day}/", AKTA_PAID_PER_DAY)
+    if not mine:
+        return False
+    if _take_slot(f"usage/_firm/{day}/", AKTA_PAID_FIRM_PER_DAY):  # "_firm" can't be a username
+        return True
+    with contextlib.suppress(Exception):
+        store.delete(mine)  # the firm is out for today: give the person their slot back
+    return False
 
 
 def akta_line(ak: dict | None) -> str | None:
@@ -952,7 +1047,8 @@ def api_founders(user):
     notes = notes_of(user["username"])
     recs = founders_from(notes)
     profile = user.get("profile")
-    member = {"sectors": profile["sectors"], "stages": profile["stages"], "weights": profile["weights"]} if profile else None
+    member = {"sectors": profile["sectors"], "stages": profile["stages"], "weights": profile["weights"],
+              "extra_focus": profile.get("extra_focus") or []} if profile else None
     mem = team_memory(user)
     today = local_today()
     out = []
@@ -1029,16 +1125,12 @@ def api_lookup(user):
     if not ix.AKTA.live:
         return jsonify({"error": "akta", "message": "akta.pro isn't connected (AKTA_API_KEY on the server)."}), 409
     ix.AKTA.error = None
-    ak = ix.AKTA.lookup(q, similar=paid_ok(user))  # over the daily cap: the free match only
+    ak = ix.AKTA.lookup(q)  # free Company Search
+    if ak.get("match") and ix.AKTA.use_paid and paid_ok(user):  # similar companies cost credits: only for a real match
+        ak = ix.AKTA.lookup(q, similar=True)
     trace_tool(user, "akta.lookup", q, json.dumps(ak)[:500], t0, "error" if ix.AKTA.error and not ak.get("match") else "success")
     return jsonify({"query": q, "akta": ak, "line": akta_line(ak), "known": who_knows(team_memory(user), [q]),
                     "error": ix.AKTA.error if not ak.get("match") else None})
-
-
-@app.get("/api/notes")
-@login_required
-def api_notes(user):
-    return jsonify({"notes": notes_of(user["username"], 20)})
 
 
 @app.get("/api/team")
@@ -1133,8 +1225,7 @@ PAGE = (Path(__file__).parent / "page.html").read_text()
 @app.get("/")
 def index():
     data = {"icons": ICONS, "interview": INTERVIEW, "prism": guard.live(),
-            "prism_error": ix.TRACER.error if ix.TRACER.key and not guard.live() else None, "llm": ix.LLM_CLIENT.live, "akta": ix.AKTA.live,
-            "store": store.mode()}
+            "prism_error": ix.TRACER.error if ix.TRACER.key and not guard.live() else None}
     blob = json.dumps(data).replace("</", "<\\/")
     return PAGE.replace("__DATA__", blob)
 

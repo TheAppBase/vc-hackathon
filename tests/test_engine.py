@@ -16,7 +16,7 @@ check("met maya from quillstack, ai agents for finance", founder="Maya", company
 check("met lots of founders today", founder=None)
 check("met tons of founders at the summit", founder=None)
 check("met plenty of people at the dinner", founder=None)
-check("met maya last week at the summit", founder=None)
+check("met maya last week at the summit", founder="Maya")
 check("Met up with Maya Okafor from Quillstack.", founder="Maya Okafor", company="Quillstack")
 check("met up with maya from quillstack", founder="Maya", company="Quillstack")
 check("Met Dr. Sean O'Brien from Kelpworks", founder="Sean O'Brien", company="Kelpworks")
@@ -68,13 +68,32 @@ check("Raising at a fair valuation", event=None)
 check("Let's catch up at dinner sometime.", event=None)
 check("Looking at an event-driven architecture.", event=None)
 check("Meet again at lunch next week.", event=None)
+# round 3
+check("Met April Chen from Kite.", founder="April Chen", company="Kite")
+check("Met Sunday Adebayo from Kite.", founder="Sunday Adebayo")
+check("Met Monday with Maya Okafor", founder="Maya Okafor")
+check("met raj patel today at the conference he is raising a seed round send him the deck friday", founder="Raj Patel",
+      next_step="send him the deck friday", next_due="2026-10-30")
+check("just met raj at the summit send him the deck friday", next_step="send him the deck friday")
+check("met maya okafor she is building an ai agent for finance teams", founder="Maya Okafor")
+check("met five founders at the mixer", founder=None)
+check("Met Maya Okafor from Quillstack. Product is done, she is raising.", step_done=False)
+check("Sent her the deck, done", step_done=True)
+check("Met Raj. He is raising a seed, so send him the deck by Friday.", next_step="He is raising a seed, so send him the deck by Friday")
+check("met raj today he will send us the data room and i'll intro him to cara friday", next_step="i'll intro him to cara friday")
+check("Intro Raj to Sam at Acme Inc. by Friday.", next_due="2026-10-30")
+check("Send him the deck. By Friday.", next_step="Send him the deck", next_due="2026-10-30")
+check("Met Maya at the Deal Flow hackathon on Saturday", event="Deal Flow hackathon")
+check("Met Ana at the founders dinner", event="founders dinner")
+check("We'll meet at the summit next month", event=None)
 # router
 R = engine.route_rules
 for q, intent, query in [("Best founders I met at YC demo day: Patchbay", "save_note", ""), ("Jonah from Patchbay said his team working on payments", "save_note", ""),
                          ("Did I meet Jonah Weiss from Patchbay?", "help", ""), ("did i meet jonah", "help", ""), ("what did maya say about pricing", "help", ""),
                          ("Find climate startups", "source", "climate"), ("Find me AI startups", "source", "AI"), ("source fintech founders", "source", "fintech"),
                          ("find new startups in robotics", "source", "robotics"), ("search for Quillstack", "lookup", "Quillstack"), ("Who is overdue?", "conversations", ""),
-                         ("source founders in climate tech", "source", "climate tech"), ("Met Jonah Weiss from Patchbay, find time next week", "save_note", "")]:
+                         ("source founders in climate tech", "source", "climate tech"), ("Show me my founders", "rank", ""), ("show me the founders", "conversations", ""),
+                         ("Did Jonah reply", "help", ""), ("Is Patchbay raising", "help", ""), ("Have to send Jonah the deck by Friday", "save_note", ""), ("Met Jonah Weiss from Patchbay, find time next week", "save_note", "")]:
     r = R(q)
     if (r["intent"], r["query"]) != (intent, query):
         fails.append(f"route {q!r}: {r}, want {intent}/{query}")

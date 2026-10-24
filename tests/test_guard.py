@@ -3,9 +3,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import guard, integrations as ix
 fails = []
 keep = ["Pinecone and Pinterest", "pin down the date", "password reset flow is broken", "uses a password manager", "Call +1 415 555 0100 or +44 20 7946 0958",
-        "raising 1,200,000 at 12000000 post", "the password is the same as before", "order 0123456789012345 shipped"]
+        "raising 1,200,000 at 12000000 post", "the password is the same as before", "order 0123456789012345 shipped",
+        "the password is weak.", "PIN is required.", "they ditch password 2FA flows"]
 gone = ["wifi password: hunter2!", "pin is 4455", "pw = x9!k", "card 4111 1111 1111 1111", "token ghp_abcdefghijklmnopqrstuvwxyz123456",
-        "Bearer abcdefghijklmnopqrstuvwxyz", "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"]
+        "Bearer abcdefghijklmnopqrstuvwxyz", "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----",
+        "password hunter22 for the dataroom", "postgres://admin:S3cret@db.example.com/app", "ASIAABCDEFGHIJKLMNOP"]
 for t in keep:
     if guard.redact(t)[0] != t: fails.append(f"over-redacted: {t!r} -> {guard.redact(t)[0]!r}")
 for t in gone:
@@ -17,7 +19,9 @@ cases = [({"status": "completed", "dimensions": {"task_completion": {"passed": F
          ({"issues": ["slow step"], "score": 55}, "unknown"), ({"safety": {"risk_level": "high"}}, "block"), ({"checks": {"pii": {"flagged": True}}}, "block"),
          ({"guardrails": {"pii": "triggered"}}, "block"), ({"safety": "unsafe"}, "block"), ({"toxicity": {"detected": True}}, "block"),
          ({"results": {"pharmacy_score": {"passed": False}}}, "unknown"), ({"metrics": {"harmony": {"status": "failed"}}}, "unknown"),
-         ({"status": "completed", "guardrails": {"status": "pending"}}, "pending"), ({"reliability": 78, "guardrail_trigger_rate": 0.0}, "unknown")]
+         ({"status": "completed", "guardrails": {"status": "pending"}}, "pending"), ({"reliability": 78, "guardrail_trigger_rate": 0.0}, "unknown"),
+         ({"safety": {"unsafe": True}}, "block"), ({"guardrails": {"pii": False}}, "allow"), ({"checks": [{"name": "pii_leak", "status": "failed"}]}, "block"),
+         ({"status": "completed", "metrics": {"reliability": {"status": "pending"}}, "guardrails": {"passed": True}}, "allow")]
 for ev, want in cases:
     got = guard._decide(ev)[0]
     if got != want: fails.append(f"_decide {ev}: {got}, want {want}")
@@ -36,4 +40,11 @@ class Pend:
 guard.TRACER.pt = Pend()
 r = guard.review("a", "a", "s", {"id": "1", "type": "save_note", "summary": "x", "payload": {"text": "hi"}}, budget=6)
 if r["decision"] != "block": fails.append(f"stopped polling while guardrail pending: {r}")
+class Steps:
+    got = []
+    def submit_trajectory(self, steps, **k): Steps.got = steps; return {"id": "t"}
+    def get_trajectory_evaluation(self, t): return {"status": "completed"}
+guard.TRACER.pt = Steps()
+guard.review("a", "a", "s", {"id": "1", "type": "save_note", "summary": "x", "payload": {"text": "Met Ana.", "original": "met ana " + "x " * 3000 + "END"}})
+if not any(str(s.get("input_summary", "")).endswith("END") for s in Steps.got): fails.append("PRISM didn't see the whole original note")
 print(f"{len(fails)} failures"); print("\n".join(fails))

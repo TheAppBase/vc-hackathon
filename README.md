@@ -4,7 +4,7 @@
 
 **Built on the event notes people record, plus akta.pro.** No Google or WhatsApp integrations and no mock data. After an event or a meeting, you tap the mic and say who you met. The agent does the rest, and checks every company on akta.pro (the agents' web search).
 
-1. **Sign in or create an account.** Create an account with your name, a username (it checks availability as you type) and a password of at least 8 characters. Sign in later with your username and password. Passwords are stored hashed. Each username gets one password try every 10 seconds, and every try deliberately takes 10 seconds, right or wrong (the button counts down), so guessing is slow without ever locking anyone out. Changing your password in Settings signs out your other devices.
+1. **Sign in or create an account.** Create an account with your name, a username (it checks availability as you type) and a password of at least 8 characters. Sign in later with your username and password. Passwords are stored hashed, in their own record (`auth/`), so nothing else can overwrite them. Each device gets one password try per username every 10 seconds, and every try deliberately takes 10 seconds, right or wrong (the button counts down). Devices that have never signed in to an account also share a limit of 6 tries a minute on it, which never applies to your own browser once you've signed in on it, so strangers' guesses can't lock you out. Changing your password in Settings signs out your other devices.
 2. **Build your agent.** A four-question interview, once (role, sectors and stages, the signal you trust, hard no's). Your answers become your agent's scoring weights.
 **The agent is an AI** (via Nicrron, set `NICRRON_API_KEY`): every typed or dictated message goes to the model, which decides what you're asking for (save a note, source founders in some field, look up a company, rank your founders, list follow-ups, ask the team, or just answer a question), and every note is rewritten as a clear, professional investor note before it is saved, keeping every name, number and next step and adding nothing. What you actually said is kept with the note ("What you said"). Claude Sonnet 5.5 writes up notes and Claude Haiku 5.5 reads requests (change with `NICRRON_MODEL` / `NICRRON_FAST_MODEL`). Without a key, requests are matched by phrases and notes are only tidied.
 
@@ -17,7 +17,7 @@
 ## Safety
 Reading is always allowed, and notes never need your approval. Each user picks a mode in Settings:
 - **Ask mode (PRISM off)** (default): nothing is sent to PRISM.
-- **Auto mode (PRISM on)**: PRISM watches the agent. Model calls, agent tool calls (akta.pro lookups, team checks, saves) and errors are traced to PRISM under one session per sign-in, and PRISM reviews each note before it is saved. Only a guardrail, policy or safety result (or an explicit block decision) stops the save; PRISM's quality scores never do. Anything else saves it, and PRISM's raw evaluation is kept in the action log.
+- **Auto mode (PRISM on)**: PRISM watches the agent. Model calls, agent tool calls (akta.pro lookups, team checks, saves) and errors are traced to PRISM under one session per open tab (a new one after 30 minutes idle), and PRISM reviews the whole note, including what you actually said when the AI rewrote it, each note before it is saved. Only a guardrail, policy or safety result (or an explicit block decision) stops the save; PRISM's quality scores never do. Anything else saves it, and PRISM's raw evaluation is kept in the action log.
 
 In both modes, secrets (API keys, private keys, passwords, card numbers) are removed from a note before it reaches the firm memory. Every save is logged under Settings → Recent agent actions, and Settings → Connected shows the live status of the firm memory, akta.pro, PRISM (credential and live traces from PRISM's setup doctor), Nicrron and Roundtable.
 
@@ -30,7 +30,7 @@ flask --app app run      # http://127.0.0.1:5000
 Without `BLOB_READ_WRITE_TOKEN` or `BLOB_STORE_ID`, data is stored in `runtime/store/` (local development only). On Vercel the app refuses to run without Blob storage rather than keep accounts on a server's temporary disk.
 
 ## Deploy (Vercel)
-1. Import the repo. `app.py` exports the Flask `app`, so no framework preset is needed.
+1. Import the repo. `app.py` exports the Flask `app`, so no framework preset is needed. `vercel.json` gives it up to 60 seconds per request, so a slow AI or PRISM never cuts a save short.
 2. Storage → create a **private** Blob store and connect it to the project. The app uses `BLOB_READ_WRITE_TOKEN` if Vercel adds it, or `BLOB_STORE_ID` with Vercel's OIDC token otherwise. Open `/api/health` on your deployment to see which storage and session key it is using.
 3. Set `SECRET_KEY` (optional: without it, one random key is kept in the Blob store and shared by every server instance), `AKTA_API_KEY` and `PRISMTRACE_API_KEY` (`PRISM_API_KEY` also works), and optionally `NICRRON_API_KEY` and `ROUNDTABLE_MCP_URL` + `ROUNDTABLE_MCP_TOKEN`. Redeploy.
 
@@ -41,7 +41,7 @@ Without `BLOB_READ_WRITE_TOKEN` or `BLOB_STORE_ID`, data is stored in `runtime/s
 - `engine.py`: note extraction rules, follow-up dates and scoring
 - `integrations.py`: PRISM (tracing, sessions, setup doctor), Nicrron, akta.pro and Roundtable
 - `env.py`: reads keys from the environment (trimming stray newlines) and scrubs secrets out of anything shown or logged
-- `store.py`: firm memory on Vercel Blob (`users/`, `notes/`, `actions/`, `akta/` lookup cache, `attempts/` password-try reservations)
+- `store.py`: firm memory on Vercel Blob (`users/`, `notes/`, `actions/`, `index/` note lists, `auth/` password hashes, `akta/` lookup cache, `attempts/` password-try reservations, `usage/` daily akta.pro caps)
 
 ## Tests
 ```bash

@@ -150,6 +150,7 @@ class LLM:
         self.live = bool(self.key)
         self.error = None
         self.client = None
+        self._down_until = 0.0  # after a timeout, skip the AI for a minute instead of making every message wait again
         if self.live:
             try:
                 from openai import OpenAI
@@ -160,7 +161,7 @@ class LLM:
 
     def chat(self, system: str, user: str, agent_name: str, max_tokens: int = 700, session_id=None, trace: bool = True,
              agent_id=None, fast: bool = False) -> str | None:
-        if not self.client:
+        if not self.client or time.time() < self._down_until:
             return None
         model = self.fast_model if fast else self.model
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -177,6 +178,8 @@ class LLM:
                 r = self._create(model, messages, max_tokens, fast)
         except Exception as e:
             self.error = scrub(f"Nicrron ({model}) failed: {e}")[:240]
+            if type(e).__name__ in ("APITimeoutError", "APIConnectionError"):
+                self._down_until = time.time() + 60
             if trace:
                 TRACER.llm(model, messages, scrub(f"[error] {e}")[:300], int((time.time() - t0) * 1000), None, agent_name,
                            session_id, agent_id)
@@ -184,14 +187,17 @@ class LLM:
         self.error = None
         out = r.choices[0].message.content or ""
         if trace:
-            TRACER.llm(model, messages, out, int((time.time() - t0) * 1000), getattr(r, "usage", None), agent_name,
+            import guard  # here, not at the top: guard imports this module
+
+            # PRISM sees the conversation with secrets removed (the user's text was already redacted).
+            TRACER.llm(model, messages, guard.redact(out)[0], int((time.time() - t0) * 1000), getattr(r, "usage", None), agent_name,
                        session_id, agent_id)
         return out
 
     def _create(self, model: str, messages: list, max_tokens: int, fast: bool):
-        # Reading a request must be quick (8s, no retry) so a slow AI falls back to phrase matching fast; writing up a
-        # note may take longer (30s, one retry).
-        client = self.client.with_options(timeout=8.0, max_retries=0) if fast else self.client.with_options(timeout=30.0, max_retries=1)
+        # Reading a request must be quick (8s) so a slow AI falls back to phrase matching fast; writing up a note may take
+        # longer (20s). No retries: the keyword rules are the fallback, and a note must save within the function's time.
+        client = self.client.with_options(timeout=8.0 if fast else 20.0, max_retries=0)
         return client.chat.completions.create(model=model, messages=messages, temperature=0.2, max_tokens=max_tokens)
 
     def json(self, system: str, user: str, agent_name: str, session_id=None, trace: bool = True, agent_id=None,
@@ -260,7 +266,7 @@ class Akta:
     def error(self, value: str | None):
         self._local.error = value
 
-    def _req(self, method: str, path: str, params=None, body=None, ttl: int | None = None):
+    def _req(self, method: str, path: str, params=None, body=None, ttl: int | None = None, timeout: float = 30):
         if not self.live:
             return None
         ck = "akta/" + hashlib.sha1(json.dumps([method, path, params, body], sort_keys=True).encode()).hexdigest() + ".json"
@@ -273,7 +279,7 @@ class Akta:
         try:
             # akta.pro paths end in "/" (without it the API answers 307); follow redirects in case that changes.
             r = httpx.request(method, self.base + path, params=params, json=body, headers={"x-api-key": self.key},
-                              timeout=30, follow_redirects=True)
+                              timeout=timeout, follow_redirects=True)
         except httpx.HTTPError as e:
             self.error = scrub(f"akta.pro {path}: {e}")[:200]
             return None
@@ -300,8 +306,8 @@ class Akta:
             pass
         return val
 
-    def company_search(self, query: str) -> list[dict]:
-        return _items(self._req("GET", "/v1/company/search/", params={"query": query})) if query else []
+    def company_search(self, query: str, timeout: float = 30) -> list[dict]:
+        return _items(self._req("GET", "/v1/company/search/", params={"query": query}, timeout=timeout)) if query else []
 
     def industry_search(self, query: str) -> list[dict]:
         return _items(self._req("GET", "/v1/industry/search/", params={"query": query, "level": "l4"})) if query else []
@@ -313,13 +319,13 @@ class Akta:
         return _items(self._req("POST", "/v1/list/generate/companies/", body={"query": query, "limit": min(limit, 20)},
                                 ttl=24 * 3600))
 
-    def lookup(self, company: str | None, similar: bool = False) -> dict:
+    def lookup(self, company: str | None, similar: bool = False, timeout: float = 30) -> dict:
         """What akta.pro knows about a company: the matching record and its category (free), and with similar=True,
         similar companies (List Generation, credits)."""
         out = {"live": self.live, "match": None, "industry": None, "similar": []}
         if not self.live or not company:
             return out
-        matches = self.company_search(company)
+        matches = self.company_search(company, timeout)
         if matches:
             m = matches[0]
             out["match"] = {"name": _name(m), "website": m.get("website") or m.get("domain"),

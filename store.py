@@ -7,11 +7,14 @@ Without either, the same JSON files are written under runtime/store/ so the app 
 
 Layout:
   users/<username>.json            account, interview profile, team, safety mode
+  auth/<username>.json             password hash and version (only sign-up and a password change write it)
+  index/<username>.json            a user's newest notes in one blob, so team views don't read every note
   notes/<username>/<id>.json       recorded event notes and what the agent read from them
   actions/<username>/<id>.json     every write the agent proposed, and what happened to it
   akta/<hash>.json                 akta.pro lookups, shared by the team
   config/session-secret.json       the session signing key when SECRET_KEY is not set, shared by every server instance
-  attempts/<username>/<n>.json     reserves a username's one password try per 10-second window (deleted after)
+  attempts/<username>/<n>.json     reserves a device's one password try per 10-second window (deleted after)
+  usage/<username>/<day>/<n>.json  counts paid akta.pro calls per person per day (usage/_firm/<day>/ for the firm)
 """
 from __future__ import annotations
 
