@@ -19,6 +19,7 @@ import json
 import os
 import secrets
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import quote
 
@@ -29,7 +30,8 @@ from env import env
 API = "https://blob.vercel-storage.com"
 API_VERSION = "12"
 TOKEN = env("BLOB_READ_WRITE_TOKEN", "VERCEL_BLOB_READ_WRITE_TOKEN")
-LOCAL = Path(os.getenv("LAST_TOUCH_RUNTIME") or ("/tmp/last-touch" if os.getenv("VERCEL") else Path(__file__).parent / "runtime")) / "store"
+LOCAL = Path(os.getenv("LAST_TOUCH_RUNTIME") or Path(__file__).parent / "runtime") / "store"
+ON_VERCEL = bool(os.getenv("VERCEL"))
 _lock = threading.Lock()
 
 
@@ -49,7 +51,7 @@ HOST = f"https://{STORE_ID.lower()}.private.blob.vercel-storage.com"
 
 def mode() -> str:
     return {"token": "Vercel Blob (private, read-write token)", "oidc": "Vercel Blob (private, OIDC)"}.get(
-        KIND, "local files on this server only (no BLOB_READ_WRITE_TOKEN or BLOB_STORE_ID)")
+        KIND, "not connected (no BLOB_READ_WRITE_TOKEN or BLOB_STORE_ID)" if ON_VERCEL else f"local files ({LOCAL})")
 
 
 def _bearer() -> str:
@@ -84,11 +86,27 @@ def get(path: str):
         return json.loads(f.read_text()) if f.exists() else None
     # cache=0 reads from origin storage, not the CDN, so a read right after an overwrite or delete sees the change
     # (otherwise it can take up to 60 seconds to propagate). Same as the Blob SDK's useCache: false.
-    r = httpx.get(f"{HOST}/{quote(path, safe='/')}", params={"cache": "0"}, headers=_headers(), timeout=15)
+    return _fetch(path, _headers())
+
+
+_http = httpx.Client(timeout=15)
+
+
+def _fetch(path: str, headers: dict):
+    r = _http.get(f"{HOST}/{quote(path, safe='/')}", params={"cache": "0"}, headers=headers)
     if r.status_code == 404:
         return None
     r.raise_for_status()
     return r.json()
+
+
+def get_many(paths: list[str]) -> list:
+    """Read many blobs in parallel (a sequential read per note made team views take tens of seconds)."""
+    if not LIVE or len(paths) < 2:
+        return [get(p) for p in paths]
+    headers = _headers()  # built here, inside the request, so the OIDC token from the request header is available
+    with ThreadPoolExecutor(16) as pool:
+        return list(pool.map(lambda p: _fetch(p, headers), paths))
 
 
 def put(path: str, data, overwrite: bool = True):

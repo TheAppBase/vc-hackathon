@@ -42,10 +42,10 @@ background:linear-gradient(160deg,color-mix(in srgb,var(--hue,#8e8e93) 65%,#fff)
 background:radial-gradient(closest-side,var(--solid) 78%,transparent 80%),conic-gradient(var(--blue) calc(var(--p)*1%),rgba(127,127,127,.2) 0)}
 .lead p{margin:8px 0;font-size:14px}.meta{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
 .pill{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;padding:2px 9px;border-radius:999px;background:var(--glass);border:1px solid var(--edge);color:var(--muted)}
-.pill.s-hot,.pill.s-due,.pill.v-take{color:#c93400;background:rgba(255,149,0,.15);border-color:transparent}
+.pill.s-due,.pill.v-take{color:#c93400;background:rgba(255,149,0,.15);border-color:transparent}
 .pill.s-overdue{color:var(--red);background:rgba(255,59,48,.13);border-color:transparent}.pill.s-scheduled,.pill.v-warm{color:var(--blue);background:rgba(10,132,255,.12);border-color:transparent}
-.pill.s-park,.pill.s-parked,.pill.s-warm,.pill.s-pass{color:var(--gray);background:rgba(142,142,147,.15);border-color:transparent}
-@media (prefers-color-scheme:dark){.pill.s-hot,.pill.s-due,.pill.v-take{color:#ffb340}}
+.pill.s-warm{color:var(--gray);background:rgba(142,142,147,.15);border-color:transparent}
+@media (prefers-color-scheme:dark){.pill.s-due,.pill.v-take{color:#ffb340}}
 .why{font-size:12.5px;color:var(--muted)}.acts{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
 .btn{display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border-radius:999px;font-weight:600;font-size:13px;background:var(--glass);border:1px solid var(--edge);
 box-shadow:inset 0 1px 0 rgba(255,255,255,.5)}.btn.primary{background:var(--grad);color:#fff;border-color:transparent}.btn:hover{filter:brightness(1.05)}
@@ -61,7 +61,6 @@ box-shadow:inset 0 1px 0 rgba(255,255,255,.5)}.btn.primary{background:var(--grad
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;justify-content:center}
 .chip{padding:7px 13px;border-radius:999px;font-size:13px;font-weight:500;background:var(--glass-strong);border:1px solid var(--edge);
 -webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);display:inline-flex;align-items:center;gap:6px}
-.chip.on{background:var(--grad);color:#fff;border-color:transparent}.chip.go{background:var(--text);color:var(--glass-strong);border-color:transparent}
 .composer{display:flex;gap:8px;align-items:center;padding:6px;border-radius:999px}
 .composer input{flex:1;min-width:0;border:0;background:transparent;font:inherit;color:var(--text);padding:8px 12px;outline:none}
 .round{width:38px;height:38px;border-radius:50%;border:0;display:grid;place-items:center;flex:none}
@@ -75,14 +74,11 @@ dialog::backdrop{background:rgba(10,20,22,.25);-webkit-backdrop-filter:blur(4px)
 .sheet h3{font-size:12.5px;color:var(--muted);font-weight:600;margin:20px 0 6px;text-transform:uppercase;letter-spacing:.04em}
 .list{list-style:none;margin:0;padding:0}.list li{display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
 .list li:first-child{border-top:0}.list li small{display:block;color:var(--muted);font-size:12px}.list li .end{margin-left:auto}
-.toggle{width:40px;height:24px;border-radius:999px;border:0;background:rgba(127,127,127,.3);position:relative;transition:background .2s;flex:none}
-.toggle:after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .2s}
-.toggle.on{background:var(--green)}.toggle.on:after{transform:translateX(16px)}
 .add{display:flex;gap:6px;padding:5px;border-radius:999px;background:var(--glass);border:1px solid var(--edge)}
 .add input{flex:1;min-width:0;border:0;background:transparent;font:inherit;color:var(--text);padding:6px 10px;outline:none}
 .hint{color:var(--muted);font-size:12px;margin:8px 2px 0}.hint.err{color:var(--red)}.rm{background:none;border:0;color:var(--muted);font-size:12.5px}
 .small{color:var(--muted);font-size:12.5px}
-@media (max-width:620px){.chat{padding:64px 12px 10px}.indent{margin-left:0}.bubble{max-width:88%}.corner{top:10px;right:10px}
+@media (max-width:620px){input,textarea,select{font-size:16px!important}.chat{padding:64px 12px 10px}.indent{margin-left:0}.bubble{max-width:88%}.corner{top:10px;right:10px}
 .kv{grid-template-columns:90px 1fr}.bar{grid-template-columns:100px 1fr 30px}.chips{justify-content:flex-start;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}
 .chip{flex:none}.bottom{padding:0 10px 10px}.row{grid-template-columns:auto 1fr}.row .right{grid-column:2;text-align:left}}
 
@@ -152,7 +148,8 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   // ---------------------------------------------------------------- server
   class NeedsSignin extends Error {}
   async function api(url, body, method) {
-    const opts = {method: method || (body === undefined ? 'GET' : 'POST'), headers: {}};
+    const d = new Date(), pad = (n) => String(n).padStart(2, '0');
+    const opts = {method: method || (body === undefined ? 'GET' : 'POST'), headers: {'X-Local-Date': `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`}};
     if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
     const r = await fetch(url, opts);
     let j = {}; try { j = await r.json(); } catch (e) { j = {}; }
@@ -214,50 +211,69 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
 
   // ---------------------------------------------------------------- dictation (no time limit, fills the chat box live)
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let rec = null, listening = false, baseText = '', finalText = '', dictated = false;
+  let rec = null, listening = false, baseText = '', finalText = '', dictated = false, seen = 0, skipBefore = 0, restarts = [];
   const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 168) + 'px'; };
   function micUI() {
     $('#mic').classList.toggle('on', listening); $('#composer').classList.toggle('listening', listening);
     $('#mic').innerHTML = ic(listening ? 'stop' : 'mic', 18);
     $('#mic').setAttribute('aria-label', listening ? 'Stop recording' : 'Record a note');
     $('#listen-hint').textContent = listening ? 'Recording. Talk as long as you like, then tap stop or send.' : '';
+    const chip = chipsEl.querySelector('.rec-chip');
+    if (chip) chip.innerHTML = `${ic(listening ? 'stop' : 'mic', 14)}${listening ? 'Stop recording' : 'Record a note'}`;
   }
   function startDictation() {
     if (!SR) { sys('Recording needs Chrome, Edge or Safari. You can type the note instead.'); input.focus(); return; }
-    listening = true; dictated = true; finalText = '';
+    listening = true; dictated = true; finalText = ''; seen = 0; skipBefore = 0; restarts = [];
     baseText = input.value.trim() ? input.value.replace(/\s*$/, ' ') : '';
-    rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || 'en-US';
-    rec.onresult = (e) => {
+    const me = new SR(); rec = me;
+    me.continuous = true; me.interimResults = true; me.lang = navigator.language || 'en-US';
+    // Every handler checks it still belongs to the current recording: results that arrive after Send, or from a
+    // recognizer that was stopped and replaced, are ignored (they used to refill the box with the sent note).
+    me.onresult = (e) => {
+      if (rec !== me || !listening) return;
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (i < skipBefore) continue; // text the user typed over
         const r = e.results[i];
         if (r.isFinal) { const sofar = baseText + finalText; finalText += r[0].transcript.trim().replace(/^/, sofar && !/\s$/.test(sofar) ? ' ' : ''); }
         else interim += r[0].transcript;
       }
+      seen = e.results.length;
       input.value = (baseText + finalText + (interim ? ' ' + interim.trim() : '')).replace(/^\s+/, '');
       grow(); input.scrollTop = input.scrollHeight;
     };
-    rec.onerror = (e) => {
-      if (['not-allowed', 'service-not-allowed', 'audio-capture'].includes(e.error)) {
-        stopDictation(); sys(e.error === 'audio-capture' ? 'No microphone found.' : 'Microphone access is blocked. Allow it in your browser to record.');
+    me.onerror = (e) => {
+      if (rec !== me) return;
+      if (['not-allowed', 'service-not-allowed', 'audio-capture', 'network', 'language-not-supported'].includes(e.error)) {
+        stopDictation();
+        sys({'audio-capture': 'No microphone found.', network: "Recording stopped: the browser's speech service can't be reached. Check your connection and tap the mic again.",
+          'language-not-supported': "Recording isn't available for your browser's language."}[e.error] || 'Microphone access is blocked. Allow it in your browser to record.');
       }
     };
     // Browsers end recognition after a pause; keep restarting until the user stops, so there is no time limit.
-    rec.onend = () => {
-      if (!listening) return;
-      baseText = (baseText + finalText).replace(/\s*$/, ' '); finalText = '';
-      try { rec.start(); } catch (e) { setTimeout(() => { if (listening) try { rec.start(); } catch (x) { stopDictation(); } }, 250); }
+    me.onend = () => {
+      if (rec !== me || !listening) return;
+      const now = Date.now();
+      restarts = restarts.filter((t) => now - t < 10000).concat(now);
+      if (restarts.length > 8) { stopDictation(); sys('Recording keeps stopping on its own. Tap the mic to try again.'); return; }
+      baseText = (baseText + finalText).replace(/\s*$/, ' '); finalText = ''; seen = 0; skipBefore = 0;
+      try { me.start(); } catch (e) { setTimeout(() => { if (rec === me && listening) try { me.start(); } catch (x) { stopDictation(); } }, 250); }
     };
-    try { rec.start(); } catch (e) { listening = false; }
+    try { me.start(); } catch (e) { listening = false; rec = null; }
     micUI(); input.focus();
   }
   function stopDictation() {
     listening = false;
-    if (rec) { try { rec.stop(); } catch (e) {} rec = null; }
+    const me = rec; rec = null;
+    if (me) { try { me.stop(); } catch (e) {} }
     micUI();
   }
   $('#mic').onclick = () => (listening ? stopDictation() : startDictation());
-  input.addEventListener('input', () => { grow(); if (listening) { baseText = input.value.replace(/\s*$/, ' '); finalText = ''; } });
+  input.addEventListener('input', () => {
+    grow();
+    // The user edited the box mid-recording: keep their text and drop the phrase being heard (it's already in the box).
+    if (listening) { baseText = input.value.replace(/\s*$/, ' '); finalText = ''; skipBefore = seen; }
+  });
   input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $('#composer').requestSubmit(); } });
 
   // ---------------------------------------------------------------- saving a note: straight away (Auto mode: PRISM reviews it first)
@@ -267,7 +283,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     const rows = [['Founder', x.founder], ['Company', x.company], ['Met at', x.event], ['Next step', x.next_step && (x.next_step + (x.next_due ? ` (by ${x.next_due})` : ''))],
       ['Sector', [x.sector, x.stage].filter(Boolean).join(' · ')], ['akta.pro', a.akta_line]].filter(([, v]) => v);
     const xt = rows.length ? `<dl class="xt">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : '<div class="why">No founder or company named, so I saved it as a general note.</div>';
-    const extra = [a.redacted && a.redacted.length ? `Removed before saving: ${a.redacted.join(', ')}.` : '',
+    const extra = [a.redacted && a.redacted.length ? `Removed before saving: ${a.redacted.join(', ')}.` : '', a.truncated || '',
       a.review ? `PRISM review: ${a.review.decision}${a.review.reason ? ` (${a.review.reason})` : ''}.` : '',
       a.reason || '', a.roundtable ? 'Copied to Roundtable.' : ''].filter(Boolean).map((t) => `<div class="why">${esc(t)}</div>`).join('');
     return `<div class="action ${esc(a.status)}" data-aid="${esc(a.id)}"><div class="th">${ic(a.status === 'done' ? 'check' : 'shield', 14)}<b>${a.status === 'done' ? 'Note saved to your firm memory' : 'Note not saved'}</b>
@@ -330,7 +346,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   }
   function mainChips() {
     setChips([
-      {label: 'Record a note', icon: 'mic', act: () => (listening ? stopDictation() : startDictation())},
+      {label: listening ? 'Stop recording' : 'Record a note', icon: listening ? 'stop' : 'mic', cls: 'rec-chip', act: () => (listening ? stopDictation() : startDictation())},
       {label: 'Who have I been talking to?', icon: 'list', act: () => run(async () => { mine('Who have I been talking to?'); await contacts(); })},
       {label: 'Rank my founders', icon: 'spark', act: () => run(async () => { mine('Rank my founders'); await rank(); })},
       {label: 'Source founders', icon: 'globe', act: () => run(async () => { mine('Source founders'); await source(''); })},
@@ -453,7 +469,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   // ---------------------------------------------------------------- settings
   async function renderSettings() {
     const dlg = $('#settings'), p = ME.profile;
-    let teamRows = '<li class="small">Loading…</li>', log = '', integ = '';
+    // Drawn once; the parts that load later (team, connections, log) are filled in place, so nothing you've typed is lost.
     const draw = () => {
       dlg.innerHTML = `<div class="sheet-head"><h2>Settings</h2><button class="round mic" id="close-settings" aria-label="Close">${ic('x', 16)}</button></div>
       <h3>Account</h3><ul class="list"><li>${agentAvatar({id: ME.username, name: ME.name})}<span><b>${esc(ME.name)}</b><small>@${esc(ME.username)}</small></span><button class="rm end" id="signout">Sign out</button></li></ul>
@@ -466,18 +482,22 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
         <label class="${ME.mode === 'ask' ? 'on' : ''}"><input type="radio" name="mode" value="ask" ${ME.mode === 'ask' ? 'checked' : ''}><span><b>Ask mode (PRISM off)</b><small>Nothing is sent to PRISM. Your notes save straight away.</small></span></label>
         <label class="${ME.mode === 'auto' ? 'on' : ''} ${D.prism ? '' : 'off'}"><input type="radio" name="mode" value="auto" ${ME.mode === 'auto' ? 'checked' : ''} ${D.prism ? '' : 'disabled'}><span><b>Auto mode (PRISM on)</b><small>${D.prism ? 'PRISM watches everything the agent does and reviews each note before it is saved. It can block an unsafe note; you never have to approve one.' : 'Needs PRISMTRACE_API_KEY on the server.'}</small></span></label>
       </div><p class="hint">Reading is always allowed. In both modes, secrets (keys, passwords, card numbers) are removed from notes before they reach the firm memory.</p>
-      <h3>Connected</h3><ul class="list">${integ || '<li class="small">Checking…</li>'}</ul>
-      <h3>Team</h3><ul class="list" id="team-list">${teamRows}</ul>
+      <h3>Connected</h3><ul class="list" id="integ-list"><li class="small">Checking…</li></ul>
+      <h3>Team</h3><ul class="list" id="team-list"><li class="small">Loading…</li></ul>
       <h3>Add a person</h3><form class="add" id="add-person"><input id="username" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Their username" aria-label="Username"><button class="btn primary" id="add-btn">${ic('userplus', 14)}Add</button></form>
       <p class="hint" id="add-hint">Type their username. Their agent shares with yours once they add you back.</p>
-      <h3>Recent agent actions</h3><ul class="list log">${log || '<li class="small">None yet.</li>'}</ul>
+      <h3>Recent agent actions</h3><ul class="list log" id="log-list"><li class="small">Loading…</li></ul>
       `;
       wire();
     };
-    const removeMate = async (u) => { ME = (await api('/api/team/' + encodeURIComponent(u), undefined, 'DELETE')).user; sys(`@${u} was removed from your team`); loadTeam(); };
+    const fill = (id, html) => { const el = $('#' + id); if (el) el.innerHTML = html; };
+    const removeMate = async (u) => {
+      try { ME = (await api('/api/team/' + encodeURIComponent(u), undefined, 'DELETE')).user; sys(`@${u} was removed from your team`); loadTeam(); }
+      catch (e) { if (!(e instanceof NeedsSignin)) sys(`Couldn't remove @${u}: ${e.message}`); }
+    };
     const wire = () => {
       $('#close-settings').onclick = () => dlg.close();
-      $('#signout').onclick = async () => { await api('/api/signout', {}); location.href = '/'; };
+      $('#signout').onclick = async () => { try { await api('/api/signout', {}); } catch (e) { /* signed out either way */ } location.href = '/'; };
       $('#pw-form').onsubmit = async (ev) => {
         ev.preventDefault();
         const h = $('#pw-hint'), btn = $('#pw-form button');
@@ -497,7 +517,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
       dlg.querySelectorAll('input[name=mode]').forEach((r) => { r.onchange = async () => {
         try { ME = (await api('/api/settings', {mode: r.value})).user; sys(ME.mode === 'auto' ? 'Auto mode: PRISM watches the agent and reviews every note.' : 'Ask mode: PRISM is off.'); }
         catch (e) { if (!(e instanceof NeedsSignin)) sys(e.message); }
-        draw();
+        dlg.querySelectorAll('input[name=mode]').forEach((x) => { x.checked = x.value === ME.mode; x.closest('label').classList.toggle('on', x.value === ME.mode); });
       }; });
       dlg.querySelectorAll('[data-rm]').forEach((b) => { b.onclick = () => removeMate(b.dataset.rm); });
       const uIn = $('#username'), hint = $('#add-hint');
@@ -507,7 +527,9 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
         const u = uIn.value.trim().replace(/^@/, '').toLowerCase();
         if (!u) { hint.textContent = 'Type their username.'; hint.className = 'hint'; return; }
         t = setTimeout(async () => {
-          const r = await api('/api/username/' + encodeURIComponent(u));
+          let r;
+          try { r = await api('/api/username/' + encodeURIComponent(u)); }
+          catch (e) { if (!(e instanceof NeedsSignin)) { hint.textContent = "Couldn't check that username right now."; hint.className = 'hint err'; } return; }
           if (uIn.value.trim().replace(/^@/, '').toLowerCase() !== u) return;
           if (!r.valid) { hint.textContent = r.message; hint.className = 'hint err'; }
           else if (r.exists) { hint.textContent = u === ME.username ? "That's you." : `@${u} exists.`; hint.className = u === ME.username ? 'hint err' : 'hint ok'; }
@@ -526,34 +548,37 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
       };
     };
     const loadTeam = async () => {
-      const r = await api('/api/team');
-      teamRows = r.team.length ? r.team.map((m) => `<li>${agentAvatar({id: m.username, name: m.name})}<span><b>${esc(m.name)}</b><small>@${esc(m.username)} · ${m.mutual ? (m.ready ? 'agent ready, sharing with you' : 'interview pending') : `waiting for @${esc(m.username)} to add you back`}</small></span><button class="rm end" data-rm="${esc(m.username)}">Remove</button></li>`).join('')
-        : '<li class="small">No teammates yet.</li>';
-      const el = $('#team-list'); if (el) { el.innerHTML = teamRows; el.querySelectorAll('[data-rm]').forEach((b) => { b.onclick = () => removeMate(b.dataset.rm); }); }
+      let r;
+      try { r = await api('/api/team'); } catch (e) { if (!(e instanceof NeedsSignin)) fill('team-list', `<li class="small">Couldn't load your team: ${esc(e.message)}</li>`); return; }
+      fill('team-list', r.team.length ? r.team.map((m) => `<li>${agentAvatar({id: m.username, name: m.name})}<span><b>${esc(m.name)}</b><small>@${esc(m.username)} · ${m.mutual ? (m.ready ? 'agent ready, sharing with you' : 'interview pending') : `waiting for @${esc(m.username)} to add you back`}</small></span><button class="rm end" data-rm="${esc(m.username)}">Remove</button></li>`).join('')
+        : '<li class="small">No teammates yet.</li>');
+      dlg.querySelectorAll('#team-list [data-rm]').forEach((b) => { b.onclick = () => removeMate(b.dataset.rm); });
     };
     draw();
-    try {
-      const [, acts, it] = await Promise.all([loadTeam(), api('/api/actions'), api('/api/integrations')]);
-      log = acts.actions.map((a) => `<li><span>${esc(((a.payload || {}).text || a.summary).slice(0, 80))}<small>${esc((a.created_at || '').slice(0, 16).replace('T', ' '))} · ${a.mode === 'auto' ? 'auto (PRISM)' : 'ask'}${a.reason ? ' · ' + esc(a.reason) : ''}</small></span><span class="pill s-${a.status === 'done' ? 'scheduled' : 'overdue'}">${esc(ST[a.status] || a.status)}</span></li>`).join('');
+    loadTeam();
+    api('/api/actions').then((acts) => {
+      fill('log-list', acts.actions.map((a) => `<li><span>${esc(((a.payload || {}).text || a.summary).slice(0, 80))}<small>${esc((a.created_at || '').slice(0, 16).replace('T', ' '))} · ${a.mode === 'auto' ? 'auto (PRISM)' : 'ask'}${a.reason ? ' · ' + esc(a.reason) : ''}</small></span><span class="pill s-${a.status === 'done' ? 'scheduled' : 'overdue'}">${esc(ST[a.status] || a.status)}</span></li>`).join('') || '<li class="small">None yet.</li>');
+    }).catch((e) => { if (!(e instanceof NeedsSignin)) fill('log-list', `<li class="small">Couldn't load: ${esc(e.message)}</li>`); });
+    api('/api/integrations').then((it) => {
       const pr = it.prism || {};
       const row = (name, ok, text) => `<li><span class="src" style="color:${ok ? 'var(--green)' : 'var(--gray)'}">${ic(ok ? 'check' : 'x', 14)}</span><span>${esc(name)}<small>${esc(text)}</small></span></li>`;
-      integ = [
+      fill('integ-list', [
         row('Firm memory', /Blob/.test(it.store), it.store),
         row('akta.pro', it.akta.live, it.akta.live ? `Connected${it.akta.paid ? ', Pro lists on' : ', free search only'}${it.akta.error ? ` · last error: ${it.akta.error}` : ''}` : 'Not connected (AKTA_API_KEY)'),
-        row('PRISM', pr.credential === 'ok', !pr.configured ? 'Not connected (PRISMTRACE_API_KEY)' : pr.credential === 'ok' ? `Credential OK${pr.live ? ', live traces arriving' : `, waiting for live traces${pr.blocked_step ? ` (${pr.blocked_step})` : ''}`}` : `Credential ${pr.credential}${pr.detail ? `: ${pr.detail}` : ''}`),
+        row('PRISM', pr.credential === 'ok', pr.credential === 'unused' ? pr.detail : !pr.configured && pr.credential !== 'fail' ? 'Not connected (PRISMTRACE_API_KEY)' : pr.credential === 'ok' ? `Credential OK${pr.live ? ', live traces arriving' : `, waiting for live traces${pr.blocked_step ? ` (${pr.blocked_step})` : ''}`}` : `Credential ${pr.credential}${pr.detail ? `: ${pr.detail}` : ''}`),
         row('AI (Nicrron)', it.nicrron.live && !it.nicrron.error, it.nicrron.live ? `Understands your requests (${it.nicrron.fast_model}) and writes up your notes (${it.nicrron.model})${it.nicrron.error ? ` · last error: ${it.nicrron.error}` : ''}` : 'Off: requests are matched by phrases and notes are only tidied, not rewritten (set NICRRON_API_KEY)'),
         row('Roundtable', it.roundtable.live, it.roundtable.live ? `Notes are copied to Roundtable${it.roundtable.error ? ` · last error: ${it.roundtable.error}` : ''}` : 'Not connected (ROUNDTABLE_MCP_URL and ROUNDTABLE_MCP_TOKEN)'),
-      ].join('');
-      const keep = $('#username') ? $('#username').value : '';
-      draw(); if (keep) $('#username').value = keep;
-    } catch (e) { /* settings still usable */ }
+      ].join(''));
+    }).catch((e) => { if (!(e instanceof NeedsSignin)) fill('integ-list', `<li class="small">Couldn't check: ${esc(e.message)}</li>`); });
   }
   $('#open-settings').onclick = () => { $('#settings').showModal(); renderSettings(); };
 
   // ---------------------------------------------------------------- composer
+  let busyNoticeShown = false;
   $('#composer').addEventListener('submit', (ev) => {
     ev.preventDefault();
-    if (busy) return;
+    if (busy) { if (!busyNoticeShown) { sys("Still working on your last message. I'll be ready in a moment."); busyNoticeShown = true; } return; }
+    busyNoticeShown = false;
     const wasDictated = dictated;
     stopDictation(); dictated = false;
     const text = input.value.trim(); if (!text) return;
@@ -565,8 +590,10 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   const SIGNOUT = {account_missing: "You were signed out: your account couldn't be read from storage. Sign in again.",
     password_changed: 'Your password was changed on another device. Sign in with the new one.'};
   function showAuth(reason) {
+    stopDictation();
     $('#app').hidden = true; $('#open-settings').hidden = true; $('#settings').open && $('#settings').close(); $('#auth').hidden = false;
-    if (reason && SIGNOUT[reason]) hint(SIGNOUT[reason], 'err');
+    authGo.disabled = false; authGo.classList.remove('busy'); authGo.textContent = authMode === 'up' ? 'Create account' : 'Sign in';
+    hint(reason && SIGNOUT[reason] ? SIGNOUT[reason] : '', reason && SIGNOUT[reason] ? 'err' : '');
     (authMode === 'up' ? $('#auth-name') : $('#auth-user')).focus();
   }
   let authMode = 'in', check = null, authState = null, needsSetup = false;
@@ -604,7 +631,8 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     if (!u) { hint('Pick a username. Teammates add you with it.'); return; }
     hint('Checking…');
     check = setTimeout(async () => {
-      const r = await api('/api/username/' + encodeURIComponent(u));
+      let r;
+      try { r = await api('/api/username/' + encodeURIComponent(u)); } catch (e) { hint(e.message || "Couldn't check that username right now.", 'err'); return; }
       if (authMode !== 'up' || authUser.value.trim().replace(/^@/, '').toLowerCase() !== u) return;
       authState = r;
       if (!r.valid) hint(r.message, 'err');

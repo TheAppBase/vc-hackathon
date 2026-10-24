@@ -1,10 +1,11 @@
 """Last Touch (Track 1, sourcing). Flask app for Vercel (exports `app`).
 
-Every person at the firm signs in with a name and a username and gets a personal agent. After an event or a meeting
-they record a quick note (dictated or typed). The agent reads each note for the founder, company, where they met and
-the next step, keeps track of who they have been talking to and what's overdue, ranks founders with their own criteria,
-and shares it all with their team through the firm memory on Vercel Blob. Recorded notes are the only data source.
-Every write goes through guard.py: Ask mode asks the user, Auto mode lets PRISM decide.
+Every person at the firm signs in with a username and password and gets a personal AI agent. After an event or a meeting
+they record a quick note (dictated or typed); the agent writes it up, reads out the founder, company, where they met and
+the next step, checks the company on akta.pro, keeps track of who they have been talking to and what's overdue, ranks
+founders with their own criteria, and shares it all with their team through the firm memory on Vercel Blob.
+Notes save without approval (secrets are redacted). In Auto mode PRISM watches the agent and reviews each note; in Ask
+mode nothing is sent to PRISM.
 
 Run locally: flask --app app run
 """
@@ -14,6 +15,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import contextlib  # noqa: E402
 import datetime as dt  # noqa: E402
 import math  # noqa: E402
 import json  # noqa: E402
@@ -49,10 +51,18 @@ class SharedKeySessions(SecureCookieSessionInterface):
 
 
 app.session_interface = SharedKeySessions()
+
+
+@app.before_request
+def _needs_storage():
+    # On Vercel, a missing Blob store would mean accounts on one server's temporary disk that vanish: refuse instead.
+    if store.ON_VERCEL and not store.LIVE and request.path.startswith("/api/") and request.path != "/api/health":
+        return jsonify({"error": "storage", "message": "Storage isn't set up: connect a private Vercel Blob store to this "
+                                                        "project and redeploy."}), 503
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=bool(os.getenv("VERCEL")),
                   PERMANENT_SESSION_LIFETIME=dt.timedelta(days=30))
 
-USER_RE = re.compile(r"^[a-z0-9_.-]{2,30}$")
+USER_RE = re.compile(r"^(?!.*\.\.)[a-z0-9][a-z0-9_.-]{1,29}$")
 MIN_PASSWORD = 8
 ATTEMPT_SECONDS = 10  # one password attempt per username per 10 seconds, and every attempt takes 10 seconds
 INTERVIEW = [
@@ -95,6 +105,16 @@ def _ts(iso: str) -> dt.datetime:
     except ValueError:
         return dt.datetime.fromtimestamp(0, dt.timezone.utc)
     return d.replace(tzinfo=dt.timezone.utc) if d.tzinfo is None else d.astimezone(dt.timezone.utc)
+
+
+def local_today() -> dt.date:
+    """The user's own date (the browser sends X-Local-Date), so "due today" matches their day, not the server's UTC day."""
+    utc = dt.datetime.now(dt.timezone.utc).date()
+    try:
+        d = dt.date.fromisoformat(request.headers.get("X-Local-Date", "")[:10])
+    except ValueError:
+        return utc
+    return d if abs((d - utc).days) <= 1 else utc
 
 
 def nice_date(iso: str) -> str:
@@ -179,6 +199,20 @@ def trace_tool(user: dict, tool: str, inp: str, out: str, t0: float, status: str
 @app.teardown_request
 def _flush_traces(exc):
     ix.TRACER.flush()
+
+
+@app.errorhandler(Exception)
+def _error(e):
+    from werkzeug.exceptions import HTTPException
+
+    if isinstance(e, HTTPException):
+        return e
+    with contextlib.suppress(Exception):
+        user = current()
+        if user:
+            trace_tool(user, request.path, request.method, scrub(f"{type(e).__name__}: {e}")[:300], time.time(), "error")
+    print(scrub(f"error on {request.path}: {type(e).__name__}: {e}"), flush=True)
+    return jsonify({"error": "Something went wrong on our side. Try again."}), 500
 
 
 # --------------------------------------------------------------------------- profile
@@ -266,37 +300,75 @@ def api_route(user):
 
 
 def notes_of(u: str, limit: int = 200) -> list[dict]:
-    """A user's notes, newest first."""
-    paths = store.list_paths(f"notes/{u}/")[-limit:]
-    return [n for n in (store.get(p) for p in reversed(paths)) if n]
+    """A user's notes, newest first (read in parallel)."""
+    paths = list(reversed(store.list_paths(f"notes/{u}/")[-limit:]))
+    return [n for n in store.get_many(paths) if n]
 
 
 def _key(s: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
 
 
+def _merge(rec: dict, other: dict):
+    """Fold record `other` into `rec` (one note linked them, e.g. "Maya Okafor from Quillstack")."""
+    later = other if other["last_touch"] > rec["last_touch"] else rec
+    for f in ("founder", "company", "sector", "stage", "one_liner", "raising_usd", "event", "akta"):
+        rec[f] = rec.get(f) or other.get(f)
+    rec["metrics"] = {**other["metrics"], **rec["metrics"]}
+    rec["background"] = list(dict.fromkeys(rec["background"] + other["background"]))[:6]
+    earlier = rec if later is other else other
+    src = later if later.get("next_step") else earlier  # the latest open step, not a newer record's "nothing"
+    rec["next_step"], rec["next_due"] = src.get("next_step"), src.get("next_due")
+    rec["first_met"], rec["last_touch"] = min(rec["first_met"], other["first_met"]), max(rec["last_touch"], other["last_touch"])
+    rec["notes"] = sorted(rec["notes"] + other["notes"], key=lambda n: (n.get("created_at") or "", n.get("id") or ""))
+
+
 def founders_from(notes: list[dict]) -> list[dict]:
-    """Merge notes about the same founder (or company) into one record. Later notes update earlier ones."""
+    """Merge notes about the same founder (or company) into one record. Later notes update earlier ones.
+
+    A shared company never joins two different founders (co-founders stay separate), and a note that names both a
+    founder and a company links their records."""
     recs, index = [], {}
-    for n in sorted(notes, key=lambda n: n.get("created_at", "")):
+    for n in sorted(notes, key=lambda n: (n.get("created_at") or "", n.get("id") or "")):
         x = n.get("extracted") or engine.clean_note(engine.heuristic_note(n.get("text", ""), _ts(n.get("created_at")).date()))
-        keys = [k for k in (_key(x.get("founder")), _key(x.get("company"))) if k]
-        if not keys:
+        fk, ck = _key(x.get("founder")), _key(x.get("company"))
+        if not (fk or ck):
             continue
-        rec = next((index[k] for k in keys if k in index), None)
-        if rec is None:
-            rec = {**engine.EMPTY_NOTE, "metrics": {}, "background": [], "notes": [], "first_met": n.get("created_at")}
+        hits = []
+        for k, is_company in ((fk, False), (ck, True)):
+            r = index.get(k) if k else None
+            if r is None or any(r is h for h in hits):
+                continue
+            if is_company and fk and r.get("founder") and _key(r["founder"]) != fk:
+                continue
+            hits.append(r)
+        if not hits:
+            rec = {**engine.EMPTY_NOTE, "metrics": {}, "background": [], "notes": [], "first_met": n.get("created_at"),
+                   "last_touch": n.get("created_at")}
             recs.append(rec)
-        for k in keys:
-            index[k] = rec
+        else:
+            rec = hits[0]
+            for other in hits[1:]:
+                _merge(rec, other)
+                recs.remove(other)
+                for k, v in list(index.items()):
+                    if v is other:
+                        index[k] = rec
+        for k in (fk, ck):
+            if k:
+                index[k] = rec
         for f in ("founder", "company", "sector", "stage", "one_liner", "raising_usd"):
             if x.get(f):
                 rec[f] = x[f]
         rec["event"] = rec.get("event") or x.get("event")
         rec["metrics"].update(x.get("metrics") or {})
         rec["background"] = list(dict.fromkeys(rec["background"] + (x.get("background") or [])))[:6]
-        rec["next_step"], rec["next_due"] = x.get("next_step"), x.get("next_due")  # the latest note sets what's next
-        rec["last_touch"] = n.get("created_at")
+        # The latest note sets what's next. A note with no next step keeps the open one, unless it says it's done.
+        if x.get("next_step"):
+            rec["next_step"], rec["next_due"] = x["next_step"], x.get("next_due")
+        elif x.get("step_done"):
+            rec["next_step"], rec["next_due"] = None, None
+        rec["last_touch"] = max(rec.get("last_touch") or "", n.get("created_at") or "")
         rec["notes"].append({"id": n.get("id"), "text": n.get("text", ""), "created_at": n.get("created_at")})
         if n.get("akta"):
             rec["akta"] = n["akta"]
@@ -329,25 +401,30 @@ def describe_rec(rec: dict) -> str:
 
 # --------------------------------------------------------------------------- firm memory (team)
 def team_memory(user: dict) -> list[dict]:
-    """What each teammate's agent shares. Only people who added each other share."""
+    """What each teammate's agent shares. Only people who added each other share. Read once per request."""
+    cache = g.setdefault("team_memory", {})
+    if user["username"] in cache:
+        return cache[user["username"]]
+    team = user.get("team", [])
+    mates = store.get_many([f"users/{m}.json" for m in team if USER_RE.match(m)])
     out = []
-    for m in user.get("team", []):
-        mate = load_user(m)
+    for mate in mates:
         if not mate or user["username"] not in mate.get("team", []):
             continue
-        notes = notes_of(m, 100)
-        out.append({"username": m, "name": mate["name"], "first": first(mate["name"]),
+        notes = notes_of(mate["username"], 100)
+        out.append({"username": mate["username"], "name": mate["name"], "first": first(mate["name"]),
                     "focus": (mate.get("profile") or {}).get("focus"), "notes": notes, "founders": founders_from(notes)})
+    cache[user["username"]] = out
     return out
 
 
 def with_team_facts(rec: dict, mem: list[dict]) -> dict:
     """Fill what the user's notes don't say (sector, stage, traction, raise) from teammates' notes on the same founder."""
-    keys = {k for k in (_key(rec.get("founder")), _key(rec.get("company"))) if k}
+    fk, ck = _key(rec.get("founder")), _key(rec.get("company"))
     out, filled = {**rec, "metrics": dict(rec.get("metrics") or {})}, []
     for mate in mem:
         for r in mate["founders"]:
-            if not keys & {_key(r.get("founder")), _key(r.get("company"))}:
+            if not ((fk and fk == _key(r.get("founder"))) or (ck and ck == _key(r.get("company")))):
                 continue
             for f in ("sector", "stage", "raising_usd", "founder", "company", "one_liner"):
                 if not out.get(f) and r.get(f):
@@ -363,6 +440,8 @@ def with_team_facts(rec: dict, mem: list[dict]) -> dict:
 
 
 def who_knows(mem: list[dict], names: list[str]) -> list[dict]:
+    """Which teammates' agents have this founder or company. A match on a single first name only is reported as a
+    possible match, because it may be a different person."""
     keys = [_key(n) for n in names if n and len(_key(n)) >= 3]
     if not keys:
         return []
@@ -370,19 +449,22 @@ def who_knows(mem: list[dict], names: list[str]) -> list[dict]:
     for mate in mem:
         hit = None
         for rec in mate["founders"]:
-            if _key(rec.get("founder")) in keys or _key(rec.get("company")) in keys:
+            fk, ck = _key(rec.get("founder")), _key(rec.get("company"))
+            if fk in keys or ck in keys:
+                sure = ck in keys or " " in fk
                 met = f" at {rec['event']}" if rec.get("event") else ""
                 nxt = f" {mate['first']}'s next step: {rec['next_step']}." if rec.get("next_step") else " No open next step."
-                hit = {"who": mate["first"], "username": mate["username"],
-                       "text": f"{mate['first']} met {describe_rec(rec)}{met} on {nice_date(rec['first_met'])}, last noted "
-                               f"{nice_date(rec['last_touch'])}.{nxt}"}
+                lead = (f"{mate['first']} met {describe_rec(rec)}" if sure else
+                        f"{mate['first']} also noted someone called {describe_rec(rec)} (could be a different person)")
+                hit = {"who": mate["first"], "username": mate["username"], "sure": sure,
+                       "text": f"{lead}{met} on {nice_date(rec['first_met'])}, last noted {nice_date(rec['last_touch'])}.{nxt}"}
                 break
         if not hit:
             for n in mate["notes"]:
                 low = _key(n.get("text"))
-                if any(re.search(rf"\b{re.escape(k)}\b", low) for k in keys):
-                    hit = {"who": mate["first"], "username": mate["username"],
-                           "text": f"{mate['first']}'s note from {nice_date(n['created_at'])}: \"{n['text'][:220]}\""}
+                if any(re.search(rf"\b{re.escape(k)}\b", low) for k in keys if " " in k or len(keys) == 1):
+                    hit = {"who": mate["first"], "username": mate["username"], "sure": False,
+                           "text": f"{mate['first']}'s note from {nice_date(n['created_at'])} mentions it: \"{n['text'][:220]}\""}
                     break
         if hit:
             hits.append(hit)
@@ -414,13 +496,15 @@ def api_note_save(user):
     if not raw:
         return jsonify({"error": "Empty note"}), 400
     original, redacted = guard.redact(raw[:guard.MAX_NOTE])
-    extracted, reader, text = extract(user, original, dt.date.today())
+    extracted, reader, text = extract(user, original, local_today())
     mode = mode_of(user)
     act = {"id": new_id(), "type": "save_note", "mode": mode, "created_at": now(), "summary": "Save a note to the firm memory",
            "payload": {"text": text, "original": original, "source": "dictation" if p.get("source") == "dictation" else "typed",
                        "extracted": extracted}}
     if redacted:
         act["redacted"] = redacted
+    if len(raw) > guard.MAX_NOTE:
+        act["truncated"] = f"Only the first {guard.MAX_NOTE:,} characters were kept."
     if mode == "auto":
         name, aid = agent_of(user)
         act["review"] = guard.review(name, aid, session.get("sid") or aid, act)
@@ -431,9 +515,12 @@ def api_note_save(user):
                 "created_at": act["created_at"]}
         if ix.AKTA.live and extracted.get("company"):
             t1, ix.AKTA.error = time.time(), None
-            note["akta"] = ix.AKTA.lookup(extracted["company"])  # free Company Search only; no credits per note
-            trace_tool(user, "akta.lookup", extracted["company"],
-                       json.dumps(note["akta"])[:500], t1, "error" if ix.AKTA.error and not note["akta"]["match"] else "success")
+            try:  # enrichment must never stop a note from saving
+                note["akta"] = ix.AKTA.lookup(extracted["company"])  # free Company Search only; no credits per note
+            except Exception as e:
+                ix.AKTA.error, note["akta"] = scrub(f"akta.pro lookup failed: {e}")[:200], None
+            trace_tool(user, "akta.lookup", extracted["company"], json.dumps(note.get("akta"))[:500], t1,
+                       "error" if ix.AKTA.error and not (note.get("akta") or {}).get("match") else "success")
         try:
             store.put(f"notes/{user['username']}/{act['id']}.json", note)
             act["status"] = "done"
@@ -441,20 +528,29 @@ def api_note_save(user):
         except Exception as e:
             act["status"], act["reason"] = "failed", scrub(f"Could not save: {e}")[:180]
         if act["status"] == "done" and ix.ROUNDTABLE.live:
-            act["roundtable"] = bool(ix.ROUNDTABLE.save_note(f"Last Touch · {describe_rec(extracted) if (extracted.get('founder') or extracted.get('company')) else 'Note'}",
-                                                             note_markdown(user, note), f"lt-{user['username']}-{act['id']}"))
+            act["roundtable"] = False
+            with contextlib.suppress(Exception):
+                title = describe_rec(extracted) if (extracted.get("founder") or extracted.get("company")) else "Note"
+                act["roundtable"] = bool(ix.ROUNDTABLE.save_note(f"Last Touch · {title}", note_markdown(user, note),
+                                                                 f"lt-{user['username']}-{act['id']}"))
     if act.get("review") and act["review"]["decision"] == "unknown" and act["status"] == "done":
         act["reason"] = f"Saved. PRISM could not decide ({act['review']['reason']})."
     log_action(user, act)
-    hits = who_knows(team_memory(user), [extracted.get("founder"), extracted.get("company")]) if act["status"] == "done" else []
+    hits = []
+    if act["status"] == "done":
+        with contextlib.suppress(Exception):
+            hits = who_knows(team_memory(user), [extracted.get("founder"), extracted.get("company")])
     trace_tool(user, "save_note", text[:500], f"{act['status']}; read with {reader}; {len(hits)} teammate matches", t0,
                "error" if act["status"] == "failed" else "success")
     return jsonify({**view(act), "hits": hits, "reader": reader})
 
 
 def view(act: dict) -> dict:
-    return {k: act.get(k) for k in ("id", "type", "summary", "payload", "status", "reason", "review", "result", "mode",
-                                    "created_at", "redacted", "akta", "roundtable")}
+    out = {k: act.get(k) for k in ("id", "type", "summary", "payload", "status", "reason", "review", "result", "mode",
+                                   "created_at", "redacted", "truncated", "akta", "roundtable")}
+    if out.get("review"):
+        out["review"] = {k: v for k, v in out["review"].items() if k != "raw"}  # the raw evaluation stays in the log
+    return out
 
 
 @app.get("/api/actions")
@@ -554,16 +650,9 @@ def api_signin():
         if not user:
             return jsonify({"error": "Wrong username or password."}), 403
         if not user.get("password"):
-            # Accounts made before passwords existed: prove it's you with the account's name, then choose a password.
-            name = str(b.get("name") or "")
-            if not name:
-                return jsonify({"error": "setup", "message": "This account doesn't have a password yet. Enter the name on the "
-                                                             "account and choose a password."}), 409
-            if " ".join(name.lower().split()) != " ".join(user["name"].lower().split()) or password_problem(pw):
-                return jsonify({"error": password_problem(pw) or "That name doesn't match this username."}), 403
-            set_password(user, pw)
-            save_user(user)
-        elif not check_password_hash(user["password"], pw):
+            # Accounts from before passwords can't be claimed with just a name (the name is visible to anyone).
+            return jsonify({"error": "This account was made before passwords existed. Create a new account."}), 403
+        if not check_password_hash(user["password"], pw):
             return jsonify({"error": "Wrong username or password."}), 403
         start_session(user)
         return jsonify({"user": public(user)})
@@ -606,6 +695,12 @@ def api_signout():
 @app.get("/api/me")
 def api_me():
     user = current()
+    if user:  # each page load starts a new chat, so it gets its own PRISM session
+        old = session.get("sid")
+        if old and traced(user):
+            name, aid = agent_of(user)
+            ix.TRACER.end_session(old, aid, name)
+        session["sid"] = f"lt-{user['username']}-{secrets.token_hex(6)}"
     return jsonify({"user": public(user) if user else None})
 
 
@@ -619,6 +714,7 @@ def api_profile(user):
     user["answers"] = answers
     user["profile"] = build_profile(answers, user["name"])
     save_user(user)
+    trace_tool(user, "learn_thesis", json.dumps(answers)[:500], user["profile"]["weights_text"], time.time())
     return jsonify({"user": public(user)})
 
 
@@ -631,6 +727,7 @@ def api_settings(user):
             return jsonify({"error": "Auto mode needs PRISM (PRISMTRACE_API_KEY on the server)."}), 400
         user.setdefault("settings", {})["mode"] = b["mode"]
         save_user(user)
+        trace_tool(user, "set_mode", b["mode"], "Auto mode: PRISM watches the agent", time.time())
     return jsonify({"user": public(user)})
 
 
@@ -647,10 +744,15 @@ def api_health():
 def api_integrations(user):
     out = {"store": store.mode(),
            "nicrron": {"live": ix.LLM_CLIENT.live, "model": ix.LLM_CLIENT.model, "fast_model": ix.LLM_CLIENT.fast_model,
-                       "error": ix.LLM_CLIENT.error}, "akta": {"live": ix.AKTA.live, "paid": ix.AKTA.use_paid, "error": ix.AKTA.error},
+                       "error": ix.LLM_CLIENT.error}, "akta": {"live": ix.AKTA.live, "paid": ix.AKTA.use_paid,
+                    "error": f"last call returned HTTP {ix.AKTA.last_status}" if (ix.AKTA.last_status or 0) >= 400 else None},
            "roundtable": {"live": ix.ROUNDTABLE.live, "error": ix.ROUNDTABLE.error}, "prism": {"configured": guard.live()}}
-    if guard.live():
+    if guard.live() and traced(user):  # Ask mode never contacts PRISM, not even for a status check
         out["prism"].update(ix.TRACER.status())
+    elif guard.live():
+        out["prism"].update(credential="unused", detail="Ask mode: PRISM is off for you")
+    elif ix.TRACER.key:
+        out["prism"].update(credential="fail", detail=ix.TRACER.error or "PRISM could not start")
     return jsonify(out)
 
 
@@ -661,11 +763,25 @@ def hard_no(profile: dict, rec: dict) -> str | None:
     ak = rec.get("akta") or {}
     text = " ".join([n["text"] for n in rec.get("notes", [])] + [str(rec.get("one_liner") or ""),
                     str((ak.get("industry") or {}).get("name") or ""), str((ak.get("match") or {}).get("description") or "")]).lower()
-    if ("crypto" in nos or "token" in nos) and re.search(r"\b(token|crypto|web3|blockchain|nft|defi)\b", text):
+    if ("crypto" in nos or "token" in nos) and re.search(r"\b(crypto|cryptocurrency|web3|blockchain|nfts?|defi|ico|"
+                                                         r"token (?:sale|presale|launch|raise|generation event)|tokenomics|memecoin)\b", text):
         return "Your hard no: token or crypto"
     if ("agenc" in nos or "service" in nos) and re.search(r"\b(agency|consultancy|services business|dev shop)\b", text):
         return "Your hard no: agency or services business"
     return None
+
+
+AKTA_PAID_PER_DAY = int(env("AKTA_PAID_PER_DAY", default="30") or 30)
+
+
+def paid_ok(user: dict) -> bool:
+    """Each person gets AKTA_PAID_PER_DAY paid akta.pro calls a day, so one account can't spend the firm's credits."""
+    k = f"usage/{user['username']}/{local_today().isoformat()}.json"
+    n = (store.get(k) or {}).get("akta_paid", 0)
+    if n >= AKTA_PAID_PER_DAY:
+        return False
+    store.put(k, {"akta_paid": n + 1})
+    return True
 
 
 def akta_line(ak: dict | None) -> str | None:
@@ -692,7 +808,7 @@ def api_founders(user):
     profile = user.get("profile")
     member = {"sectors": profile["sectors"], "stages": profile["stages"], "weights": profile["weights"]} if profile else None
     mem = team_memory(user)
-    today = dt.date.today()
+    today = local_today()
     out = []
     for r in recs:
         st, due = status_of(r, today)
@@ -739,6 +855,9 @@ def api_source(user):
     ix.AKTA.error = None
     if not ix.AKTA.use_paid:
         return jsonify({"error": "akta", "message": "Sourcing uses akta.pro List Generation, which is turned off (AKTA_USE_PAID=0)."}), 409
+    if not paid_ok(user):
+        return jsonify({"error": "akta", "message": f"You've used today's {AKTA_PAID_PER_DAY} akta.pro sourcing calls. "
+                                                    "Try again tomorrow."}), 429
     rows = ix.AKTA.companies_like(query, 10)
     mine = {k for r in founders_from(notes_of(user["username"])) for k in (_key(r.get("company")), _key(r.get("founder"))) if k}
     mem = team_memory(user)
@@ -764,8 +883,8 @@ def api_lookup(user):
     if not ix.AKTA.live:
         return jsonify({"error": "akta", "message": "akta.pro isn't connected (AKTA_API_KEY on the server)."}), 409
     ix.AKTA.error = None
-    ak = ix.AKTA.lookup(q, similar=True)
-    trace_tool(user, "akta.lookup", q, json.dumps(ak)[:500], t0)
+    ak = ix.AKTA.lookup(q, similar=paid_ok(user))  # over the daily cap: the free match only
+    trace_tool(user, "akta.lookup", q, json.dumps(ak)[:500], t0, "error" if ix.AKTA.error and not ak.get("match") else "success")
     return jsonify({"query": q, "akta": ak, "line": akta_line(ak), "known": who_knows(team_memory(user), [q]),
                     "error": ix.AKTA.error if not ak.get("match") else None})
 
@@ -783,8 +902,9 @@ def api_team(user):
     for m in user.get("team", []):
         mate = load_user(m)
         if mate:
-            out.append({"username": m, "name": mate["name"], "focus": (mate.get("profile") or {}).get("focus"),
-                        "mutual": user["username"] in mate.get("team", []), "ready": bool(mate.get("profile"))})
+            mutual = user["username"] in mate.get("team", [])
+            out.append({"username": m, "name": mate["name"], "mutual": mutual, "ready": bool(mate.get("profile")) if mutual else None,
+                        "focus": (mate.get("profile") or {}).get("focus") if mutual else None})
     return jsonify({"team": out})
 
 
@@ -801,6 +921,7 @@ def api_team_add(user):
         return jsonify({"error": f"@{u} is already on your team."}), 409
     user.setdefault("team", []).append(u)
     save_user(user)
+    trace_tool(user, "team_add", u, "added", time.time())
     return jsonify({"user": public(user), "mate": {"username": u, "name": mate["name"], "mutual": user["username"] in mate.get("team", [])}})
 
 
@@ -810,6 +931,7 @@ def api_team_remove(user, u):
     u = norm(u)
     user["team"] = [x for x in user.get("team", []) if x != u]
     save_user(user)
+    trace_tool(user, "team_remove", u, "removed", time.time())
     return jsonify({"user": public(user)})
 
 
@@ -818,7 +940,7 @@ def api_team_remove(user, u):
 def api_team_activity(user):
     t0 = time.time()
     mem = team_memory(user)
-    today = dt.date.today()
+    today = local_today()
     team = []
     for m in mem:
         recent = sorted(m["founders"], key=lambda r: r["last_touch"], reverse=True)

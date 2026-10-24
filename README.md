@@ -27,7 +27,7 @@ pip install -r requirements.txt
 cp .env.example .env     # fill in what you have
 flask --app app run      # http://127.0.0.1:5000
 ```
-Without `BLOB_READ_WRITE_TOKEN`, data is stored in `runtime/store/` (local development only).
+Without `BLOB_READ_WRITE_TOKEN` or `BLOB_STORE_ID`, data is stored in `runtime/store/` (local development only). On Vercel the app refuses to run without Blob storage rather than keep accounts on a server's temporary disk.
 
 ## Deploy (Vercel)
 1. Import the repo. `app.py` exports the Flask `app`, so no framework preset is needed.

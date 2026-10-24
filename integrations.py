@@ -42,7 +42,8 @@ class Tracer:
             try:
                 from prismtrace import PRISMtrace
 
-                self.pt = PRISMtrace(api_key=self.key, host=PRISM_HOST, project_id=self.project)
+                # 8s, not the SDK's 30s: a slow PRISM must not hold up saving a note.
+                self.pt = PRISMtrace(api_key=self.key, host=PRISM_HOST, project_id=self.project, timeout=8)
             except Exception as e:  # pragma: no cover
                 self.live, self.error = False, scrub(f"PRISM init failed: {e}")
 
@@ -84,15 +85,23 @@ class Tracer:
             except Exception as e:
                 self.error = scrub(f"end_session failed: {e}")
 
-    def flush(self):
-        """Serverless functions freeze after the response, so send queued traces before the request ends."""
-        if self.pt:
-            self.pt.flush(timeout=3.0)
+    def flush(self, budget: float = 3.0):
+        """Serverless functions freeze after the response, so send queued traces before the request ends, waiting at most
+        `budget` seconds in total (the SDK's own flush waits up to its timeout per queued send)."""
+        if not self.pt:
+            return
+        with self.pt._threads_lock:
+            threads, self.pt._pending_threads[:] = self.pt._pending_threads[:], []
+        deadline = time.time() + budget
+        for t in threads:
+            t.join(max(0.0, deadline - time.time()))
 
     def status(self) -> dict:
         """Credential check (handshake) and live-trace check (setup doctor), cached for five minutes."""
         if not self.key:
             return {"credential": "missing", "detail": "PRISMTRACE_API_KEY is not set on the server", "live": False}
+        if not self.pt:
+            return {"credential": "fail", "detail": self.error or "PRISM could not start", "live": False}
         with self._lock:
             if self._status and time.time() - self._status[0] < 300:
                 return self._status[1]
@@ -197,22 +206,22 @@ LLM_CLIENT = LLM()
 
 
 # --------------------------------------------------------------------------- Akta (akta.pro by Wokelo)
-def _items(obj) -> list:
-    """Akta responses differ by endpoint; find the list of records defensively."""
+def _items(obj) -> list[dict]:
+    """Akta responses differ by endpoint; find the list of records defensively. Only dict records are returned."""
     if isinstance(obj, list):
-        return obj
+        return [x for x in obj if isinstance(x, dict)]
     if isinstance(obj, dict):
         for k in ("data", "results", "companies", "articles", "items", "records", "industries", "news"):
             v = obj.get(k)
             if isinstance(v, list):
-                return v
+                return [x for x in v if isinstance(x, dict)]
             if isinstance(v, dict):
                 inner = _items(v)
                 if inner:
                     return inner
         for v in obj.values():
-            if isinstance(v, list):
-                return v
+            if isinstance(v, list) and any(isinstance(x, dict) for x in v):
+                return [x for x in v if isinstance(x, dict)]
     return []
 
 
@@ -234,7 +243,16 @@ class Akta:
         self.base = env("AKTA_BASE_URL", default="https://api.akta.pro/api").rstrip("/")
         self.live = bool(self.key)
         self.use_paid = env("AKTA_USE_PAID", default="1") == "1"
-        self.error = None
+        self._local = threading.local()  # each request sees only its own error
+        self.last_status = None  # for Settings: the last HTTP status, never the query or another user's details
+
+    @property
+    def error(self) -> str | None:
+        return getattr(self._local, "error", None)
+
+    @error.setter
+    def error(self, value: str | None):
+        self._local.error = value
 
     def _req(self, method: str, path: str, params=None, body=None, ttl: int | None = None):
         if not self.live:
@@ -253,6 +271,7 @@ class Akta:
         except httpx.HTTPError as e:
             self.error = scrub(f"akta.pro {path}: {e}")[:200]
             return None
+        self.last_status = r.status_code
         if r.status_code >= 400:
             try:
                 detail = r.json().get("detail") or r.json().get("message") or r.text

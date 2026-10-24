@@ -17,13 +17,19 @@ from env import scrub
 from integrations import TRACER
 
 SECRET_RES = [
-    (re.compile(r"\b(?:\d[ -]?){13,19}\b"), "looks like a card or account number"),
-    (re.compile(r"\b(?:sk|pk|rk|pt-sk)[-_][A-Za-z0-9_-]{16,}"), "contains an API key"),
-    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "contains an AWS key"),
-    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "contains a private key"),
-    (re.compile(r"\b(?:password|passcode|pin code|pin)\s*(?:is|:|=)\s*\S+", re.I), "contains a password"),
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.S), "a private key"),
+    (re.compile(r"\b(?:sk|pk|rk|pt-sk|sk-ant|sk-proj)[-_][A-Za-z0-9_-]{16,}"), "an API key"),
+    (re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}"), "a GitHub token"),
+    (re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"), "a Slack token"),
+    (re.compile(r"\bAIza[0-9A-Za-z_-]{30,40}"), "a Google API key"),
+    (re.compile(r"\bvercel_blob_rw_[A-Za-z0-9_]{10,}"), "a Vercel Blob token"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "an AWS key"),
+    (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{16,}"), "a bearer token"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"), "a token"),
+    (re.compile(r"\b(?:password|passcode|passwd|pwd|pin code|pin)\s*(?:is|:|=|-)?\s*(?:is\s+)?['\"]?(?=\S*[\d\W])\S{4,}", re.I), "a password"),
 ]
-MAX_NOTE = 8000
+CARD_RE = re.compile(r"(?<![\d+])(?:\d[ -]?){12,18}\d(?!\d)")
+MAX_NOTE = 20000
 # PRISM scores many things (task completion, efficiency, reliability...). Only guardrail / policy / safety results, or an
 # explicit block decision, may stop a note; a low quality score must never block it.
 SAFETY = re.compile(r"guardrail|polic|safety|unsafe|harm|toxic|pii|privacy|secret|jailbreak|injection|abuse|violen|hate|"
@@ -38,14 +44,33 @@ def live() -> bool:
     return TRACER.pt is not None
 
 
+def _luhn(digits: str) -> bool:
+    total, alt = 0, False
+    for ch in reversed(digits):
+        d = int(ch) * (2 if alt else 1)
+        total += d - 9 if d > 9 else d
+        alt = not alt
+    return total % 10 == 0
+
+
 def redact(text: str) -> tuple[str, list[str]]:
-    """Replace secrets with [redacted] and say what was removed."""
+    """Replace secrets with [redacted] and say what was removed. Card numbers must pass the Luhn check, so phone numbers
+    and other long numbers stay."""
     found = []
     for rx, why in SECRET_RES:
         if rx.search(text):
-            found.append(why.replace("looks like ", "").replace("contains ", ""))
+            found.append(why)
             text = rx.sub("[redacted]", text)
-    return text, found
+
+    def card(m):
+        digits = re.sub(r"\D", "", m.group(0))
+        if 13 <= len(digits) <= 19 and _luhn(digits):
+            found.append("a card number")
+            return "[redacted]"
+        return m.group(0)
+
+    text = CARD_RE.sub(card, text)
+    return text, list(dict.fromkeys(found))
 
 
 def _decide(ev) -> tuple[str, str]:
@@ -104,7 +129,7 @@ def review(agent: str, agent_id: str, session_id: str, action: dict, wait_s: flo
          "input_summary": f"{agent} wants to: {action['summary']}",
          "output_summary": "Waiting for PRISM's review before writing to the shared firm memory. Reads are allowed."},
         {"step_type": "tool_call", "tool_name": action["type"], "label": action["summary"][:120], "status": "success",
-         "input_summary": json.dumps(action["payload"], default=str)[:4000]},
+         "input_summary": json.dumps(action["payload"], default=str)[:24000]},  # the whole note, not just its start
     ]
     try:
         res = pt.submit_trajectory(steps, agent_name=agent, agent_id=agent_id, conversation_id=session_id,
@@ -125,6 +150,9 @@ def review(agent: str, agent_id: str, session_id: str, action: dict, wait_s: flo
             decision, why = "unknown", scrub(f"PRISM error: {e}")[:140]
         if decision in ("allow", "block"):
             break
+        status = str((last or {}).get("status") or (last or {}).get("evaluation_status") or "").lower() if isinstance(last, dict) else ""
+        if status in ("completed", "complete", "done", "finished", "failed", "error", "success", "succeeded"):
+            break  # PRISM has finished; polling again won't change its answer
         time.sleep(1.5)
     if decision == "pending":
         decision, why = "unknown", "PRISM is still evaluating"
