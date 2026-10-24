@@ -1,13 +1,12 @@
-"""Firm memory on Vercel Blob (private store). Every user, note and pipeline is one JSON blob.
+"""Firm memory on Vercel Blob (private store). Every user, note and agent action is one JSON blob.
 
 Set BLOB_READ_WRITE_TOKEN (Vercel adds it when you connect a Blob store to the project). Without it, the same
 JSON files are written under runtime/store/ so the app also runs locally.
 
 Layout:
-  users/<username>.json            account, interview profile, team, Google connection
-  google/<email>.json              which username a Google account is linked to
-  notes/<username>/<id>.json       dictated or typed notes
-  pipeline/<username>.json         founders the agent sourced, so teammates' agents can see them
+  users/<username>.json            account, interview profile, team, safety mode
+  notes/<username>/<id>.json       recorded event notes and what the agent read from them
+  actions/<username>/<id>.json     every write the agent proposed, and what happened to it
 """
 from __future__ import annotations
 

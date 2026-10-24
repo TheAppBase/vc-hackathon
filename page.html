@@ -100,7 +100,6 @@ max-height:168px;line-height:1.45}
 .field input{width:100%;border:1px solid var(--edge);background:var(--glass);border-radius:12px;padding:10px 12px;font:inherit;color:var(--text);outline:none}
 .field input:focus{border-color:var(--blue)}
 .hint.ok{color:var(--green)}.wide{width:100%;justify-content:center;padding:10px 14px;font-size:14px}
-.or{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;margin:14px 0}.or:before,.or:after{content:"";flex:1;height:1px;background:var(--line)}
 .action{max-width:600px;border-radius:16px;padding:12px 14px;background:var(--glass-strong);border:1px solid var(--edge);animation:in .25s ease-out}
 .action .th{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted);flex-wrap:wrap}.action .th .ic{color:var(--orange)}
 .action .th b{color:var(--text);font-size:13px}.action .st{margin-left:auto;font-weight:600}
@@ -108,8 +107,7 @@ max-height:168px;line-height:1.45}
 .action.blocked,.action.failed{border-color:rgba(255,59,48,.5)}.action.blocked .st,.action.failed .st,.action.blocked .th .ic{color:var(--red)}
 .action.denied .st{color:var(--gray)}.action .body{font-size:13.5px;margin:8px 0 2px;white-space:pre-wrap;max-height:220px;overflow:auto}
 .action .why{margin-top:4px}
-.email{display:grid;gap:6px;margin-top:6px}.email input,.email textarea{width:100%;border:1px solid var(--edge);background:var(--glass);border-radius:10px;
-padding:8px 10px;font:inherit;font-size:13.5px;color:var(--text);outline:none}.email textarea{min-height:120px;resize:vertical}
+.xt{display:grid;grid-template-columns:88px 1fr;gap:2px 10px;font-size:13px;margin:8px 0 0}.xt dt{color:var(--muted)}.xt dd{margin:0}
 .seg{display:grid;gap:8px}.seg label{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:14px;border:1px solid var(--edge);
 background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue) inset}
 .seg label.off{opacity:.55;cursor:not-allowed}.seg input{margin-top:4px}.seg small{display:block;color:var(--muted);font-size:12px}
@@ -117,17 +115,16 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
 </style></head><body>
 <div class="app" id="app" hidden><div class="chat" id="chat" aria-live="polite"></div>
 <div class="bottom"><div class="chips" id="chips"></div><div class="listen-hint" id="listen-hint"></div>
-<form class="composer glass" id="composer"><button type="button" class="round mic" id="mic" aria-label="Dictate" title="Dictate"></button>
-<textarea id="input" rows="1" autocomplete="off" placeholder="Message your agent" aria-label="Message"></textarea><button class="round send" aria-label="Send" id="send"></button></form></div></div>
+<form class="composer glass" id="composer"><button type="button" class="round mic" id="mic" aria-label="Record a note" title="Record a note"></button>
+<textarea id="input" rows="1" autocomplete="off" placeholder="Record or type a note, or ask your agent" aria-label="Message"></textarea><button class="round send" aria-label="Send" id="send"></button></form></div></div>
 <button class="corner glass" id="open-settings" aria-label="Settings" hidden></button>
 <dialog class="glass sheet" id="settings"></dialog>
 <div class="auth" id="auth" hidden><form class="card glass" id="auth-form" autocomplete="off">
-<h1>Last Touch</h1><p>Your personal sourcing agent. It reads your Google account and shares who you're talking to with your team.</p>
+<h1>Last Touch</h1><p>Your personal sourcing agent. Record a quick note after every event; it keeps track of who you met and what's next, and shares it with your team.</p>
 <label class="field"><span>Your name</span><input id="auth-name" placeholder="Your name" maxlength="60" required></label>
 <label class="field"><span>Username</span><input id="auth-user" placeholder="your-username" maxlength="31" required autocapitalize="off" spellcheck="false"></label>
 <p class="hint" id="auth-hint">Pick a username. Teammates add you with it.</p>
-<button class="btn primary wide" id="auth-go" disabled>Continue</button>
-<div id="auth-google"></div></form></div>
+<button class="btn primary wide" id="auth-go" disabled>Continue</button></form></div>
 <script type="application/json" id="data">__DATA__</script>
 <script>
 (function () {
@@ -137,7 +134,6 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   const ic = (n, s) => `<svg class="ic" width="${s || 16}" height="${s || 16}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${D.icons[n] || ''}</svg>`;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const chat = $('#chat'), chipsEl = $('#chips'), input = $('#input');
-  const GOOGLE = ['Gmail', 'Google Calendar', 'Google Chat'];
   let ME = null;
   $('#mic').innerHTML = ic('mic', 18); $('#send').innerHTML = ic('up', 18); $('#open-settings').innerHTML = ic('settings', 18);
 
@@ -178,7 +174,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     opts = opts || {};
     const icon = opts.kind === 'mem' ? 'db' : opts.kind === 'agent' ? 'agent' : opts.kind || 'tool';
     const head = esc(me()) + (opts.target ? ` &rarr; ${esc(opts.target)}` : '');
-    const el = block(`<div class="toolcard running"><div class="th">${ic(icon, 14)}<span class="tk">${opts.read === false ? 'Write' : 'Read'}</span><span>${head}</span><span class="st">running</span></div><code>${esc(call)}</code><div class="tr"></div></div>`);
+    const el = block(`<div class="toolcard running"><div class="th">${ic(icon, 14)}<span class="tk">${opts.write ? 'Write' : 'Read'}</span><span>${head}</span><span class="st">running</span></div><code>${esc(call)}</code><div class="tr"></div></div>`);
     const card = el.querySelector('.toolcard'), st = card.querySelector('.st');
     try {
       const res = await fn();
@@ -193,21 +189,15 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   }
   function setChips(list) {
     chipsEl.innerHTML = list.map((c, i) => `<button type="button" class="chip ${c.cls || ''}" data-i="${i}">${c.icon ? ic(c.icon, 14) : ''}${esc(c.label)}</button>`).join('');
-    chipsEl.onclick = (ev) => { const b = ev.target.closest('.chip'); if (b && !busy) list[+b.dataset.i].act(b); };
+    chipsEl.onclick = (ev) => { const b = ev.target.closest('.chip'); if (b && (!busy || b.dataset.free)) list[+b.dataset.i].act(b); };
   }
   let busy = false;
   async function run(fn) {
     if (busy) return; busy = true;
     try { await fn(); } catch (e) {
       if (e instanceof NeedsSignin) return;
-      if (e.code === 'google') connectGoogleMsg(e.message);
-      else if (e.code === 'interview') sys('Finish the interview first.');
-      else say(esc(e.message || 'Something went wrong. Try again.'));
+      say(esc(e.message || 'Something went wrong. Try again.'));
     } finally { busy = false; }
-  }
-  function connectGoogleMsg(text) {
-    if (!D.google) { say(`${esc(text || 'This needs Google.')} Google sign-in isn't set up on this server yet (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET).`); return; }
-    say(`${esc(text || 'Connect your Google account so I can read Gmail, Google Calendar and Google Chat.')}<div class="acts"><a class="btn primary" href="/auth/google">${ic('Gmail', 13)}Connect Google</a></div>`);
   }
 
   // ---------------------------------------------------------------- dictation (no time limit, fills the chat box live)
@@ -217,11 +207,11 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   function micUI() {
     $('#mic').classList.toggle('on', listening); $('#composer').classList.toggle('listening', listening);
     $('#mic').innerHTML = ic(listening ? 'stop' : 'mic', 18);
-    $('#mic').setAttribute('aria-label', listening ? 'Stop dictation' : 'Dictate');
-    $('#listen-hint').textContent = listening ? 'Listening. Talk as long as you like, then tap stop or send.' : '';
+    $('#mic').setAttribute('aria-label', listening ? 'Stop recording' : 'Record a note');
+    $('#listen-hint').textContent = listening ? 'Recording. Talk as long as you like, then tap stop or send.' : '';
   }
   function startDictation() {
-    if (!SR) { sys('Dictation needs Chrome, Edge or Safari.'); return; }
+    if (!SR) { sys('Recording needs Chrome, Edge or Safari. You can type the note instead.'); input.focus(); return; }
     listening = true; dictated = true; finalText = '';
     baseText = input.value.trim() ? input.value.replace(/\s*$/, ' ') : '';
     rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || 'en-US';
@@ -237,7 +227,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     };
     rec.onerror = (e) => {
       if (['not-allowed', 'service-not-allowed', 'audio-capture'].includes(e.error)) {
-        stopDictation(); sys(e.error === 'audio-capture' ? 'No microphone found.' : 'Microphone access is blocked. Allow it in your browser to dictate.');
+        stopDictation(); sys(e.error === 'audio-capture' ? 'No microphone found.' : 'Microphone access is blocked. Allow it in your browser to record.');
       }
     };
     // Browsers end recognition after a pause; keep restarting until the user stops, so there is no time limit.
@@ -258,26 +248,20 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   input.addEventListener('input', () => { grow(); if (listening) { baseText = input.value.replace(/\s*$/, ' '); finalText = ''; } });
   input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $('#composer').requestSubmit(); } });
 
-  // ---------------------------------------------------------------- actions (writes): Ask mode asks, Auto mode asks PRISM
-  const ST = {needs_approval: 'Needs your OK', done: 'Done', blocked: 'Blocked', denied: 'Not done', failed: 'Failed'};
+  // ---------------------------------------------------------------- saving a note (the only write): Ask mode asks, Auto mode asks PRISM
+  const ST = {needs_approval: 'Needs your OK', done: 'Saved', blocked: 'Blocked', denied: 'Not saved', failed: 'Failed'};
   function actionHTML(a) {
-    const p = a.payload || {};
-    let body = '';
-    if (a.type === 'send_email') body = `To: ${esc(p.to.join(', '))}\nSubject: ${esc(p.subject)}\n\n${esc(p.body)}`;
-    else if (a.type === 'save_note') body = esc(p.text);
-    else body = esc((p.items || []).slice(0, 8).map((i) => i.company || i.name || i.email).join(', ') + ((p.items || []).length > 8 ? ', …' : ''));
+    const x = (a.payload || {}).extracted || {};
+    const rows = [['Founder', x.founder], ['Company', x.company], ['Met at', x.event], ['Next step', x.next_step && (x.next_step + (x.next_due ? ` (by ${x.next_due})` : ''))],
+      ['Stage', [x.sector, x.stage].filter(Boolean).join(' · ')]].filter(([, v]) => v);
+    const xt = rows.length ? `<dl class="xt">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : '<div class="why">I could not find a founder or company in this note. It is still saved as a note.</div>';
     const rv = a.review ? `<div class="why">PRISM review: ${esc(a.review.decision)}${a.review.reason ? ` (${esc(a.review.reason)})` : ''}</div>` : '';
     const reason = a.reason ? `<div class="why">${esc(a.reason)}</div>` : '';
     const done = a.result && a.result.text ? `<div class="why">${esc(a.result.text)}</div>` : '';
-    const btns = a.status === 'needs_approval' ? `<div class="acts"><button class="btn primary" data-approve="${esc(a.id)}">${ic('check', 13)}Approve</button><button class="btn" data-deny="${esc(a.id)}">Don't</button></div>` : '';
+    const btns = a.status === 'needs_approval' ? `<div class="acts"><button class="btn primary" data-approve="${esc(a.id)}">${ic('check', 13)}Save</button><button class="btn" data-deny="${esc(a.id)}">Don't save</button></div>` : '';
     return `<div class="action ${esc(a.status)}" data-aid="${esc(a.id)}"><div class="th">${ic('shield', 14)}<b>${esc(a.summary)}</b>
       <span class="st">${esc(ST[a.status] || a.status)}</span></div><div class="small">${a.mode === 'auto' ? 'Auto mode · checked by PRISM' : 'Ask mode · waiting for you'}</div>
-      <div class="body">${body}</div>${rv}${reason}${done}${btns}</div>`;
-  }
-  async function propose(type, payload) {
-    const a = await api('/api/actions', {type, payload});
-    block(actionHTML(a));
-    return a;
+      <div class="body">${esc((a.payload || {}).text || '')}</div>${a.status === 'blocked' && !rows.length ? '' : xt}${rv}${reason}${done}${btns}</div>`;
   }
   chat.addEventListener('click', async (ev) => {
     const ok = ev.target.closest('[data-approve]'), no = ev.target.closest('[data-deny]');
@@ -286,8 +270,14 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     const card = chat.querySelector(`[data-aid="${CSS.escape(id)}"]`);
     card.querySelectorAll('button').forEach((b) => { b.disabled = true; });
     try { const a = await api(`/api/actions/${id}`, {approve: !!ok}); card.outerHTML = actionHTML(a); }
-    catch (e) { if (!(e instanceof NeedsSignin)) say(esc(e.message)); }
+    catch (e) { card.querySelectorAll('button').forEach((b) => { b.disabled = false; }); if (!(e instanceof NeedsSignin)) say(esc(e.message)); }
   });
+  async function note(text, source) {
+    const a = await tool('read_note() → save_note()', () => api('/api/actions', {type: 'save_note', payload: {text, source}}), {kind: 'db', write: true,
+      result: (a) => `read with ${a.reader} · ${a.hits.length ? `${a.hits.length} teammate match${a.hits.length > 1 ? 'es' : ''}` : 'no teammate has met them yet'} · ${(ST[a.status] || a.status).toLowerCase()}`});
+    block(actionHTML(a));
+    for (const h of a.hits) say(esc(h.text), {id: h.username, name: h.who});
+  }
 
   // ---------------------------------------------------------------- interview
   const Q = D.interview;
@@ -302,140 +292,123 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     const q = Q[step];
     await typing(350);
     say(esc(q.q.replace('{name}', ME.first)));
-    input.placeholder = 'Type or dictate an answer, or pick one';
+    input.placeholder = 'Type or record an answer, or pick one';
     setChips(q.chips.map((c) => ({label: c, act: () => run(() => answer(c))})));
   }
   async function answer(text) {
     mine(text); setChips([]);
     answers[Q[step].key] = text;
     if (step < Q.length - 1) return next();
-    input.placeholder = 'Message your agent';
-    const r = await tool(`learn_thesis("${answers.focus || ''}")`, () => api('/api/profile', answers), {kind: 'db', read: false, result: (r) => r.user.profile.weights_text});
+    input.placeholder = 'Record or type a note, or ask your agent';
+    const r = await tool(`learn_thesis("${answers.focus || ''}")`, () => api('/api/profile', answers), {kind: 'db', result: (r) => r.user.profile.weights_text});
     ME = r.user; step = -1;
     profileCard();
     await typing(300);
-    say(`I'm ready, ${esc(ME.first)}. I source with your criteria and check with your teammates' agents so nobody drops a founder. Anything you type or dictate that isn't a request, I save as a note.`);
-    if (!ME.google.connected) connectGoogleMsg();
+    say(`I'm ready, ${esc(ME.first)}. After every event or meeting, tap the mic and tell me who you met, what they're building and what's next. I'll keep track, rank founders with your criteria, and check with your teammates' agents so nobody drops a founder.`);
     mainChips();
   }
   function profileCard() {
     const p = ME.profile;
     const bars = Object.entries(p.weights).filter(([, v]) => v).sort((a, b) => b[1] - a[1])
-      .map(([k, v]) => `<div class="bar"><span>${esc(k.replace('_', ' '))}</span><span class="t"><i style="width:${v * 2.5}%"></i></span><span>${v}%</span></div>`).join('');
+      .map(([k, v]) => `<div class="bar"><span>${esc({mutual: 'warm intro', capital_efficiency: 'capital efficiency', technical_depth: 'technical depth', founder_fit: 'founder fit'}[k] || k)}</span><span class="t"><i style="width:${v * 2.5}%"></i></span><span>${v}%</span></div>`).join('');
     block(`<div class="card profile"><div class="head">${agentAvatar()}<div><b>${esc(ME.first)}'s agent</b><span class="small">@${esc(ME.username)} · built from your interview</span></div></div>
       <dl class="kv"><dt>Role</dt><dd>${esc(p.role)}</dd><dt>Focus</dt><dd>${esc(p.sectors.join(', '))} · ${esc(p.stages.join(', '))}</dd>
-      <dt>Trusts</dt><dd>${esc(p.signal || 'A balanced read')}</dd><dt>Filters out</dt><dd>${esc(p.nos)}</dd>
-      <dt>Writes</dt><dd>${ME.mode === 'auto' ? 'Auto: PRISM approves or blocks' : 'Asks you first'}</dd></dl><div class="bars">${bars}</div></div>`);
+      <dt>Trusts</dt><dd>${esc(p.signal || 'A balanced read')}</dd>
+      <dt>Saving notes</dt><dd>${ME.mode === 'auto' ? 'Auto: PRISM approves or blocks' : 'Asks you first'}</dd></dl><div class="bars">${bars}</div></div>`);
   }
   function mainChips() {
     setChips([
-      {label: 'Source founders', icon: 'spark', act: () => run(() => ask('Source founders for me'))},
-      {label: 'Who have I been talking to?', icon: 'Gmail', act: () => run(() => ask('Who have I been talking to?'))},
+      {label: 'Record a note', icon: 'mic', act: () => (listening ? stopDictation() : startDictation())},
+      {label: 'Who have I been talking to?', icon: 'list', act: () => run(() => ask('Who have I been talking to?'))},
+      {label: 'Rank my founders', icon: 'spark', act: () => run(() => ask('Rank my founders'))},
       {label: 'What is my team working on?', icon: 'agent', act: () => run(() => ask('What is my team working on?'))},
     ]);
+    chipsEl.querySelector('.chip').dataset.free = '1';
   }
 
-  // ---------------------------------------------------------------- skills
-  let LEADS = [];
+  // ---------------------------------------------------------------- skills (reads)
+  let FOUNDERS = [];
   async function ask(text, source) {
     mine(text);
     const q = text.toLowerCase().trim();
     let m;
-    if ((m = q.match(/^(?:ask (?:the |my )?team (?:about )?|who knows )(.+?)\??$/))) return askTeam(m[1]);
-    if (/^(source|find)\b|new founders|my pipeline|scan (my )?inbox/.test(q)) return sourcing();
-    if (/who (have|am) i (been )?talk|my conversations|who do i owe|follow[- ]?ups?\??$/.test(q)) return contacts();
+    if ((m = text.trim().match(/^(?:ask (?:the |my )?team (?:about )?|who (?:else )?knows |has anyone (?:else )?met )(.+?)\??$/i))) return askTeam(m[1]);
+    if (/^(rank|score|source)\b|my founders|best founders|who should i (meet|back|call)/.test(q)) return rank();
+    if (/who (have|am) i (been )?talk|who did i meet|my conversations|what('s| is) next|follow[- ]?ups?\??$|what do i owe|overdue/.test(q)) return contacts();
     if (/what is my team|team working|what's my team|my team doing/.test(q)) return team();
     if (/^(help|what can you do)\??$/.test(q)) {
-      return say('I can source founders from your Gmail, show who you have been talking to across Gmail, Google Calendar and Google Chat, and check what your team is working on. Ask "who knows Acme?" to check with your teammates\' agents. Anything else you type or dictate, I save as a note.');
+      return say('Record a note after any event or meeting and I\'ll read out the founder, company, where you met and your next step. Then ask "who have I been talking to?", "rank my founders", "what is my team working on?" or "who knows Patchbay?". Anything that isn\'t a question, I save as a note.');
     }
     return note(text, source);
   }
-  async function note(text, source) {
-    const check = await tool('check_firm_memory(note)', () => api('/api/notes/check', {text}), {kind: 'agent', target: 'team agents',
-      result: (r) => (r.hits.length ? `${r.hits.length} teammate match${r.hits.length > 1 ? 'es' : ''}` : 'no teammate has this yet')});
-    for (const h of check.hits) say(esc(h.text), {id: h.username, name: h.who});
-    await propose('save_note', {text, source});
+  async function loadFounders() {
+    const r = await tool('list_founders(my notes)', () => api('/api/founders'), {kind: 'db',
+      result: (r) => `${r.notes} notes · ${r.founders.length} founders · ${r.founders.filter((f) => f.status === 'due' || f.status === 'overdue').length} need a follow-up`});
+    FOUNDERS = r.founders;
+    return r;
   }
-  async function sourcing() {
-    const r = await tool('gmail.scan_inbox(primary, last 30 days)', () => api('/api/source'), {kind: 'Gmail',
-      result: (r) => `${r.scanned} emails read · ${r.leads.length} founders kept · ${r.dropped.length} dropped · extracted with ${r.extractor}`});
-    LEADS = r.leads;
-    if (!r.leads.length) {
-      say(`I read ${r.scanned} recent emails in your primary inbox and found no founder pitches.${r.dropped.length ? ` I dropped ${r.dropped.length}: ${esc(r.dropped.slice(0, 4).map((d) => `${d.from} (${d.reason.toLowerCase()})`).join(', '))}.` : ''}`);
+  const label = (f) => esc(f.founder || f.company) + (f.founder && f.company ? ` · ${esc(f.company)}` : '');
+  async function contacts() {
+    const r = await loadFounders();
+    if (!r.founders.length) {
+      say(r.notes ? 'Your notes don\'t name any founders or companies yet. Try something like "Met Jonah Weiss from Patchbay at the hackathon. Next step: intro to Cara by Monday."'
+        : 'No notes yet. After your next event or meeting, tap the mic and tell me who you met and what\'s next.');
       return;
     }
-    const top = r.leads.filter((l) => l.verdict !== 'Outside your thesis' && l.verdict !== 'Pass').slice(0, 6);
-    const show = top.length ? top : r.leads.slice(0, 4);
-    say(`${top.length ? `Here is who is worth your time, ranked by your own criteria.` : `Nobody clears your bar right now. Closest ones:`} ${r.leads.length - show.length ? `${r.leads.length - show.length} more are below your bar or outside your thesis.` : ''}${r.dropped.length ? ` Dropped ${r.dropped.length} non-founder emails.` : ''}`);
-    block(`<div class="cards">${show.map(leadCard).join('')}</div>`);
-    for (const l of show.filter((l) => l.known.length).slice(0, 3)) for (const h of l.known) say(esc(h.text), {id: h.username, name: h.who});
-    await propose('share_pipeline', {items: r.leads.map((l) => ({company: l.company, founder: l.founder, email: l.email, score: l.score, verdict: l.verdict, sector: l.sector, stage: l.stage, subject: l.subject, when: l.when}))});
+    const order = {overdue: 0, due: 1, scheduled: 2, warm: 3};
+    const rows = r.founders.slice().sort((a, b) => (order[a.status] - order[b.status]) || (a.last_touch < b.last_touch ? 1 : -1));
+    say(`You've noted ${r.founders.length} founder${r.founders.length === 1 ? '' : 's'}. Here is who, where you met, and what's next:`);
+    block(`<div class="card rows">${rows.map((f) => `<div class="row"><span class="src">${ic('note', 16)}</span>
+      <div><b>${label(f)}</b><small>${f.event ? `Met at ${esc(f.event)} · ` : ''}first noted ${esc(f.first_met)}${f.notes > 1 ? ` · ${f.notes} notes` : ''}</small><small>Next: ${esc(f.next_step || 'nothing noted')}</small></div>
+      <div class="right"><span class="pill s-${esc(f.status)}">${esc(f.due)}</span><br>${esc(f.when)}</div></div>`).join('')}</div>`);
+    const urgent = rows.filter((f) => f.status === 'overdue' || f.status === 'due');
+    if (urgent.length) say(`${urgent.length} need you now: ${urgent.slice(0, 5).map((f) => `${esc(f.founder || f.company)} (${esc(f.next_step)}${f.status === 'overdue' ? ', overdue' : ''})`).join(', ')}.`);
+    for (const f of rows.filter((f) => f.known.length).slice(0, 3)) for (const h of f.known) say(esc(h.text), {id: h.username, name: h.who});
   }
-  function leadCard(l) {
-    const v = l.verdict === 'Take the first call' ? 'v-take' : l.verdict === 'Keep warm' ? 'v-warm' : '';
-    return `<div class="card lead"><div class="top"><div><h4>${esc(l.company || l.founder)}</h4><small>${esc(l.founder)} · ${esc(l.email)} · ${esc(l.when)}</small></div>
-      <div class="ring" style="--p:${l.score}" title="Score on your thesis">${l.score}</div></div><p>${esc(l.one_liner)}</p>
-      <div class="meta"><span class="pill ${v}">${esc(l.verdict)}</span><span class="pill">${esc(l.sector)} · ${esc(l.stage)}</span>${l.known.length ? `<span class="pill s-scheduled">Known to ${esc(l.known[0].who)}</span>` : ''}</div>
-      <div class="why">Why: ${esc(l.why)}${l.traction !== 'Not stated' ? ` · ${esc(l.traction)}` : ''}${l.raise ? ` · raising ${esc(l.raise)}` : ''}</div>
-      <div class="acts"><button class="btn primary" data-draft="${esc(l.id)}">${ic('send', 13)}Draft reply</button><button class="btn" data-team="${esc(l.id)}">${ic('agent', 13)}Ask the team</button></div></div>`;
+  async function rank() {
+    const r = await loadFounders();
+    if (!r.founders.length) { say('No founders in your notes yet. Record a note after your next event and I\'ll rank them with your criteria.'); return; }
+    const ranked = r.founders.slice().sort((a, b) => (a.verdict === 'Outside your thesis') - (b.verdict === 'Outside your thesis') || b.score - a.score);
+    const show = ranked.slice(0, 6);
+    say(`Ranked by your own criteria (${esc(ME.profile.weights_text)}).${ranked.length > show.length ? ` ${ranked.length - show.length} more below.` : ''} Scores only use what your notes say, so the more you note (traction, raise, background), the better I rank.`);
+    block(`<div class="cards">${show.map(leadCard).join('')}</div>`);
+  }
+  function leadCard(f) {
+    const v = f.verdict === 'Take the next call' ? 'v-take' : f.verdict === 'Keep warm' ? 'v-warm' : '';
+    return `<div class="card lead"><div class="top"><div><h4>${esc(f.company || f.founder)}</h4><small>${esc(f.founder && f.company ? f.founder : '')}${f.event ? `${f.founder && f.company ? ' · ' : ''}met at ${esc(f.event)}` : ''}</small></div>
+      <div class="ring" style="--p:${f.score}" title="Score on your criteria">${f.score}</div></div><p>${esc(f.one_liner || f.latest)}</p>
+      <div class="meta"><span class="pill ${v}">${esc(f.verdict)}</span><span class="pill">${esc(f.sector || 'sector not noted')} · ${esc(f.stage || 'stage not noted')}</span>${f.known.length ? `<span class="pill s-scheduled">Known to ${esc(f.known[0].who)}</span>` : ''}</div>
+      <div class="why">Why: ${esc(f.why)}${f.traction !== 'Not stated' ? ` · ${esc(f.traction)}` : ''}${f.raise ? ` · raising ${esc(f.raise)}` : ''}${f.filled_from && f.filled_from.length ? ` · filled in from ${esc(f.filled_from.join(' and '))}'s notes` : ''}</div>
+      <div class="acts"><button class="btn primary" data-draft="${esc(f.id)}">${ic('copy', 13)}Draft follow-up</button><button class="btn" data-team="${esc(f.id)}">${ic('agent', 13)}Ask the team</button></div></div>`;
   }
   chat.addEventListener('click', (ev) => {
-    const d = ev.target.closest('[data-draft]'), t = ev.target.closest('[data-team]'), s = ev.target.closest('[data-send]');
+    const d = ev.target.closest('[data-draft]'), t = ev.target.closest('[data-team]'), c = ev.target.closest('[data-copy]');
+    if (c) { navigator.clipboard && navigator.clipboard.writeText(c.closest('.indent, .bubble').querySelector('.draft').textContent).then(() => { c.textContent = 'Copied'; }); return; }
     if (busy) return;
-    if (d) { const l = LEADS.find((x) => x.id === d.dataset.draft); if (l) run(() => draft(l)); }
-    if (t) { const l = LEADS.find((x) => x.id === t.dataset.team); if (l) run(() => ask(`Ask the team about ${l.company || l.founder}`)); }
-    if (s) {
-      const f = s.closest('.email');
-      run(async () => {
-        s.disabled = true;
-        await propose('send_email', {to: f.querySelector('[name=to]').value.split(',').map((x) => x.trim()).filter(Boolean),
-          subject: f.querySelector('[name=subject]').value, body: f.querySelector('[name=body]').value, thread: f.dataset.thread || null});
-      });
-    }
+    if (d) { const f = FOUNDERS.find((x) => x.id === d.dataset.draft); if (f) draft(f); }
+    if (t) { const f = FOUNDERS.find((x) => x.id === t.dataset.team); if (f) run(() => ask(`Ask the team about ${f.company || f.founder}`)); }
   });
-  async function draft(l) {
-    say(`Here is a reply to ${esc(l.founder)}. Edit it, then send. ${ME.mode === 'auto' ? 'PRISM checks it before it goes out.' : 'I ask you once more before it goes out.'}
-      <div class="email" data-thread="${esc(l.thread || '')}"><input name="to" value="${esc(l.email)}" aria-label="To"><input name="subject" value="${esc(/^re:/i.test(l.subject) ? l.subject : 'Re: ' + l.subject)}" aria-label="Subject">
-      <textarea name="body" aria-label="Email">${esc(l.draft)}</textarea><div class="acts"><button class="btn primary" data-send>${ic('send', 13)}Send with Gmail</button></div></div>`);
+  function draft(f) {
+    const who = (f.founder || '').split(' ')[0] || 'there';
+    const where = f.event ? ` at ${f.event}` : '';
+    const text = `Hi ${who},\n\nGreat to meet you${where}. I'd love to keep the conversation going about ${f.company || 'what you\'re building'}. Do you have 20 minutes next week?\n\nBest,\n${ME.first}`;
+    say(`Here is a follow-up for ${esc(f.founder || f.company)}. Copy it into your email or messages; I don't send anything.<div class="draft">${esc(text)}</div><div class="acts"><button class="btn" data-copy>${ic('copy', 13)}Copy</button></div>`);
   }
   async function askTeam(q) {
+    if (!ME.team.length) { say('You have no teammates yet. Add people by username in Settings.'); return; }
     const r = await tool(`who_knows("${q}")`, () => api('/api/team/search?q=' + encodeURIComponent(q)), {kind: 'agent', target: 'team agents',
       result: (r) => `${r.hits.length} repl${r.hits.length === 1 ? 'y' : 'ies'}`});
-    if (!ME.team.length) { say('You have no teammates yet. Add people by username in Settings.'); return; }
-    if (!r.hits.length) { say(`Nobody on your team has ${esc(q)} in their notes, pipeline or conversations. It's yours.`); return; }
+    if (!r.hits.length) { say(`Nobody on your team has noted ${esc(q)}. It's yours.`); return; }
     for (const h of r.hits) say(esc(h.text), {id: h.username, name: h.who});
-  }
-  async function contacts() {
-    const r = await tool(`sync(${GOOGLE.join(', ')})`, () => api('/api/conversations'), {kind: 'Gmail',
-      result: (r) => `${r.people.length} people · ${r.chat.length} chats${Object.keys(r.errors).length ? ` · ${Object.keys(r.errors).join(', ')} failed` : ''}`});
-    for (const [k, v] of Object.entries(r.errors)) say(`${esc(k)} didn't load: ${esc(v)}`);
-    if (!r.people.length && !r.chat.length) { say('I found no recent conversations with people in your Gmail, Google Calendar or Google Chat.'); return; }
-    if (r.people.length) {
-      say(`You have ${r.people.length} active conversations. Here is who, where, and what's next:`);
-      block(`<div class="card rows">${r.people.map((c) => `<div class="row"><span class="src" title="${esc(c.channels.join(', '))}">${ic(c.channels[0], 16)}</span>
-        <div><b>${esc(c.name)}</b> · ${esc(c.email)}<small>${esc(c.summary)}</small><small>Next: ${esc(c.next)}</small></div>
-        <div class="right"><span class="pill s-${esc(c.status)}">${esc(c.due)}</span><br>${esc(c.channels.join(', '))} · ${esc(c.when)}</div></div>`).join('')}</div>`);
-    }
-    if (r.chat.length) {
-      say('Latest in Google Chat:');
-      block(`<div class="card rows">${r.chat.map((c) => `<div class="row"><span class="src">${ic('Google Chat', 16)}</span>
-        <div><b>${esc(c.space)}</b>${c.sender ? ` · ${esc(c.sender)}` : ''}<small>${esc(c.text || '(attachment)')}</small></div><div class="right">${esc((c.when || '').slice(0, 10))}</div></div>`).join('')}</div>`);
-    }
-    const urgent = r.people.filter((c) => c.status === 'overdue' || c.status === 'due');
-    if (urgent.length) say(`${urgent.length} need you now: ${urgent.slice(0, 5).map((c) => `${esc(c.name)} (${esc(c.due.toLowerCase())})`).join(', ')}.`);
-    if (r.people.length) await propose('share_contacts', {items: r.people.map((c) => ({name: c.name, email: c.email, last_touch: c.last_touch, channels: c.channels, status: c.status}))});
   }
   async function team() {
     if (!ME.team.length) { say('You have no teammates yet. Open Settings and add people by their username.'); return; }
     const r = await tool('list_relationships()', () => api('/api/team/activity'), {kind: 'agent', target: 'team agents',
       result: (r) => `${r.team.length} agent${r.team.length === 1 ? '' : 's'} replied`});
     for (const m of r.team) {
-      const bits = [];
-      if (m.pipeline.length) bits.push(`In my pipeline: ${m.pipeline.map((p) => `${esc(p.company || p.founder)} (${p.score})`).join(', ')}.`);
-      if (m.due.length) bits.push(`Owes a reply to ${m.due.map((c) => esc(c.name)).join(', ')}.`);
-      if (m.notes.length) bits.push(`Latest note: "${esc(m.notes[0].text.slice(0, 180))}"`);
-      bits.push(`Talking to ${m.contacts} people${m.focus ? `. Focus: ${esc(m.focus)}` : ''}.`);
-      say(bits.join('<br>'), {id: m.username, name: m.name.split(' ')[0]});
+      if (!m.count) { say(`No founders in my notes yet.${m.latest ? ` Latest note: "${esc(m.latest)}"` : ''}`, {id: m.username, name: m.name.split(' ')[0]}); continue; }
+      const lines = m.founders.map((f) => `${esc(f.who)}${f.event ? ` (met at ${esc(f.event)})` : ''}, ${esc(f.when)}: ${esc(f.next_step || 'no next step')}${f.status === 'overdue' ? ' · overdue' : ''}`);
+      say(`Talking to ${m.count} founder${m.count === 1 ? '' : 's'}${m.focus ? `. Focus: ${esc(m.focus)}` : ''}.<br>${lines.join('<br>')}`, {id: m.username, name: m.name.split(' ')[0]});
     }
     if (r.pending.length) sys(`Waiting for ${r.pending.map((u) => '@' + u).join(', ')} to add you back before their agents share with you.`);
   }
@@ -443,41 +416,34 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   // ---------------------------------------------------------------- settings
   async function renderSettings() {
     const dlg = $('#settings'), p = ME.profile;
-    let teamRows = '<li class="small">Loading…</li>', log = '';
-    dlg.innerHTML = '';
+    let teamRows = '<li class="small">Loading…</li>', log = '', prism = '';
     const draw = () => {
       dlg.innerHTML = `<div class="sheet-head"><h2>Settings</h2><button class="round mic" id="close-settings" aria-label="Close">${ic('x', 16)}</button></div>
       <h3>Account</h3><ul class="list"><li>${agentAvatar({id: ME.username, name: ME.name})}<span><b>${esc(ME.name)}</b><small>@${esc(ME.username)}</small></span><button class="rm end" id="signout">Sign out</button></li></ul>
       <h3>Your agent</h3>${p ? `<ul class="list"><li>${agentAvatar()}<span><b>${esc(ME.first)}'s agent</b><small>${esc(p.sectors.join(', '))} · ${esc(p.stages.join(', '))}</small></span></li></ul>
         <button class="btn" id="redo">Redo the interview</button>` : '<p class="small">Finish the interview in the chat to build your agent.</p>'}
-      <h3>When the agent writes</h3><div class="seg">
-        <label class="${ME.mode === 'ask' ? 'on' : ''}"><input type="radio" name="mode" value="ask" ${ME.mode === 'ask' ? 'checked' : ''}><span><b>Ask for permission</b><small>Every write (sending an email, saving to firm memory) waits for your OK. PRISM is not used.</small></span></label>
-        <label class="${ME.mode === 'auto' ? 'on' : ''} ${D.prism ? '' : 'off'}"><input type="radio" name="mode" value="auto" ${ME.mode === 'auto' ? 'checked' : ''} ${D.prism ? '' : 'disabled'}><span><b>Auto, guarded by PRISM</b><small>${D.prism ? 'PRISM reviews each write and allows or blocks it. If PRISM is unsure, I ask you.' : 'Needs PRISM_API_KEY and PRISM_PROJECT_ID on the server.'}</small></span></label>
-      </div><p class="hint">Reading is always allowed. Hard limits apply in both modes: at most 3 recipients and 25 emails a day, and no secrets in what I write.</p>
-      <h3>Google</h3>${!D.google ? '<p class="small">Google sign-in is not set up on this server (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET).</p>'
-        : ME.google.connected ? `<ul class="list">${GOOGLE.map((s) => `<li><span class="src">${ic(s, 16)}</span><span>${esc(s)}<small>Connected as ${esc(ME.google.email)}</small></span></li>`).join('')}</ul>
-          <button class="btn" id="g-off">Disconnect Google</button>`
-        : `<p class="small">Connect once to give your agent Gmail, Google Calendar and Google Chat.</p><a class="btn primary" href="/auth/google">${ic('Gmail', 14)}Connect Google</a>`}
+      <h3>When the agent saves a note</h3><div class="seg">
+        <label class="${ME.mode === 'ask' ? 'on' : ''}"><input type="radio" name="mode" value="ask" ${ME.mode === 'ask' ? 'checked' : ''}><span><b>Ask for permission</b><small>Every note waits for your OK before it goes into firm memory. PRISM is not used.</small></span></label>
+        <label class="${ME.mode === 'auto' ? 'on' : ''} ${D.prism ? '' : 'off'}"><input type="radio" name="mode" value="auto" ${ME.mode === 'auto' ? 'checked' : ''} ${D.prism ? '' : 'disabled'}><span><b>Auto, guarded by PRISM</b><small>${D.prism ? 'PRISM watches the agent, reviews each note and allows or blocks it. If PRISM is unsure, I ask you.' : 'Needs PRISMTRACE_API_KEY on the server.'}</small></span></label>
+      </div><p class="hint">Reading is always allowed. In both modes I never save secrets (keys, passwords, card numbers).</p>${prism}
       <h3>Team</h3><ul class="list" id="team-list">${teamRows}</ul>
       <h3>Add a person</h3><form class="add" id="add-person"><input id="username" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Their username" aria-label="Username"><button class="btn primary" id="add-btn">${ic('userplus', 14)}Add</button></form>
       <p class="hint" id="add-hint">Type their username. Their agent shares with yours once they add you back.</p>
       <h3>Recent agent actions</h3><ul class="list log">${log || '<li class="small">None yet.</li>'}</ul>
-      <p class="hint">Firm memory: ${esc(D.store)}.</p>`;
+      <p class="hint">Firm memory: ${esc(D.store)}. Notes are read with ${D.llm ? 'Nicrron' : 'keyword rules'}.</p>`;
       wire();
     };
+    const removeMate = async (u) => { ME = (await api('/api/team/' + encodeURIComponent(u), undefined, 'DELETE')).user; sys(`@${u} was removed from your team`); loadTeam(); };
     const wire = () => {
       $('#close-settings').onclick = () => dlg.close();
       $('#signout').onclick = async () => { await api('/api/signout', {}); location.href = '/'; };
       const redo = $('#redo'); if (redo) redo.onclick = () => { dlg.close(); run(startInterview); };
       dlg.querySelectorAll('input[name=mode]').forEach((r) => { r.onchange = async () => {
-        try { ME = (await api('/api/settings', {mode: r.value})).user; sys(ME.mode === 'auto' ? 'Auto mode: PRISM reviews every write.' : 'Ask mode: I ask before every write.'); }
+        try { ME = (await api('/api/settings', {mode: r.value})).user; sys(ME.mode === 'auto' ? 'Auto mode: PRISM watches the agent and reviews every note.' : 'Ask mode: I ask before saving every note.'); }
         catch (e) { if (!(e instanceof NeedsSignin)) sys(e.message); }
         draw();
       }; });
-      const goff = $('#g-off'); if (goff) goff.onclick = async () => { ME = (await api('/api/google/disconnect', {})).user; sys('Google disconnected.'); draw(); };
-      dlg.querySelectorAll('[data-rm]').forEach((b) => { b.onclick = async () => {
-        ME = (await api('/api/team/' + encodeURIComponent(b.dataset.rm), undefined, 'DELETE')).user; sys(`@${b.dataset.rm} was removed from your team`); loadTeam();
-      }; });
+      dlg.querySelectorAll('[data-rm]').forEach((b) => { b.onclick = () => removeMate(b.dataset.rm); });
       const uIn = $('#username'), hint = $('#add-hint');
       let t = null;
       uIn.oninput = () => {
@@ -507,12 +473,13 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
       const r = await api('/api/team');
       teamRows = r.team.length ? r.team.map((m) => `<li>${agentAvatar({id: m.username, name: m.name})}<span><b>${esc(m.name)}</b><small>@${esc(m.username)} · ${m.mutual ? (m.ready ? 'agent ready, sharing with you' : 'interview pending') : `waiting for @${esc(m.username)} to add you back`}</small></span><button class="rm end" data-rm="${esc(m.username)}">Remove</button></li>`).join('')
         : '<li class="small">No teammates yet.</li>';
-      const el = $('#team-list'); if (el) { el.innerHTML = teamRows; el.querySelectorAll('[data-rm]').forEach((b) => { b.onclick = async () => { ME = (await api('/api/team/' + encodeURIComponent(b.dataset.rm), undefined, 'DELETE')).user; sys(`@${b.dataset.rm} was removed from your team`); loadTeam(); }; }); }
+      const el = $('#team-list'); if (el) { el.innerHTML = teamRows; el.querySelectorAll('[data-rm]').forEach((b) => { b.onclick = () => removeMate(b.dataset.rm); }); }
     };
     draw();
     try {
-      const [, acts] = await Promise.all([loadTeam(), api('/api/actions')]);
-      log = acts.actions.map((a) => `<li><span>${esc(a.summary)}<small>${esc((a.created_at || '').slice(0, 16).replace('T', ' '))} · ${a.mode === 'auto' ? 'auto (PRISM)' : 'ask'}${a.reason ? ' · ' + esc(a.reason) : ''}</small></span><span class="pill s-${a.status === 'done' ? 'scheduled' : a.status === 'blocked' || a.status === 'failed' ? 'overdue' : a.status === 'needs_approval' ? 'due' : 'pass'}">${esc(ST[a.status] || a.status)}</span></li>`).join('');
+      const [, acts, pr] = await Promise.all([loadTeam(), api('/api/actions'), D.prism ? api('/api/prism') : Promise.resolve(null)]);
+      log = acts.actions.map((a) => `<li><span>${esc(((a.payload || {}).text || a.summary).slice(0, 80))}<small>${esc((a.created_at || '').slice(0, 16).replace('T', ' '))} · ${a.mode === 'auto' ? 'auto (PRISM)' : 'ask'}${a.reason ? ' · ' + esc(a.reason) : ''}</small></span><span class="pill s-${a.status === 'done' ? 'scheduled' : a.status === 'blocked' || a.status === 'failed' ? 'overdue' : a.status === 'needs_approval' ? 'due' : 'pass'}">${esc(ST[a.status] || a.status)}</span></li>`).join('');
+      if (pr) prism = `<p class="hint ${pr.credential === 'ok' ? 'ok' : 'err'}">PRISM: ${pr.credential === 'ok' ? 'credential OK' : `credential ${esc(pr.credential)}${pr.detail ? ` (${esc(pr.detail)})` : ''}`}${pr.credential === 'ok' ? (pr.live ? ', live traces arriving' : `, waiting for live traces${pr.blocked_step ? ` (${esc(pr.blocked_step)})` : ''}`) : ''}.</p>`;
       const keep = $('#username') ? $('#username').value : '';
       draw(); if (keep) $('#username').value = keep;
     } catch (e) { /* settings still usable */ }
@@ -522,9 +489,10 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   // ---------------------------------------------------------------- composer
   $('#composer').addEventListener('submit', (ev) => {
     ev.preventDefault();
+    if (busy) return;
     const wasDictated = dictated;
     stopDictation(); dictated = false;
-    const text = input.value.trim(); if (!text || busy) return;
+    const text = input.value.trim(); if (!text) return;
     input.value = ''; grow();
     if (step >= 0) run(() => answer(text)); else run(() => ask(text, wasDictated ? 'dictation' : 'typed'));
   });
@@ -532,12 +500,10 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   // ---------------------------------------------------------------- sign in
   function showAuth() {
     $('#app').hidden = true; $('#open-settings').hidden = true; $('#auth').hidden = false;
-    $('#auth-google').innerHTML = D.google ? `<div class="or">or</div><a class="btn wide" href="/auth/google?mode=login">${ic('Gmail', 14)}Sign in with Google</a>` : '';
     $('#auth-name').focus();
   }
-  let check = null;
+  let check = null, authState = null;
   const authUser = $('#auth-user'), authHint = $('#auth-hint'), authGo = $('#auth-go');
-  let authState = null;
   authUser.oninput = () => {
     clearTimeout(check); authState = null; authGo.disabled = true;
     const u = authUser.value.trim().replace(/^@/, '').toLowerCase();
@@ -550,7 +516,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
       if (!r.valid) { authHint.textContent = r.message; authHint.className = 'hint err'; authGo.textContent = 'Continue'; return; }
       authGo.disabled = false;
       if (r.available) { authHint.textContent = `@${u} is available.`; authHint.className = 'hint ok'; authGo.textContent = 'Create account'; }
-      else { authHint.textContent = r.google ? `@${u} exists and is linked to Google. You'll confirm with Google.` : `@${u} exists. Enter the name on that account to sign in.`; authHint.className = 'hint'; authGo.textContent = r.google ? 'Sign in with Google' : 'Sign in'; }
+      else { authHint.textContent = `@${u} exists. Enter the name on that account to sign in.`; authHint.className = 'hint'; authGo.textContent = 'Sign in'; }
     }, 250);
   };
   $('#auth-form').onsubmit = async (ev) => {
@@ -560,40 +526,25 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     authGo.disabled = true;
     try {
       const r = await api(authState.available ? '/api/signup' : '/api/signin', body);
-      if (r.redirect) { location.href = r.redirect; return; }
       ME = r.user; start();
     } catch (e) { authHint.textContent = e.message; authHint.className = 'hint err'; authGo.disabled = false; }
   };
 
   // ---------------------------------------------------------------- start
-  const GERR = {not_configured: 'Google sign-in is not set up on this server.', state: 'Google sign-in expired. Try again.', exchange: "Google didn't finish signing you in. Try again.",
-    nomatch: "That Google account isn't the one linked to this username.", noaccount: 'No account is linked to that Google account yet. Create one with your name and a username, then connect Google in Settings.',
-    linked: 'That Google account is already linked to another username.', offline: 'Google did not grant offline access. Disconnect the app in your Google account settings and connect again.',
-    access_denied: 'You cancelled Google access.', email: 'Google did not share a verified email.'};
   function start() {
     $('#auth').hidden = true; $('#app').hidden = false; $('#open-settings').hidden = false;
     chat.innerHTML = '';
-    const qs = new URLSearchParams(location.search);
-    if (qs.get('google') === 'connected') sys(`Google connected as ${ME.google.email}`);
-    if (qs.get('google_error')) sys(GERR[qs.get('google_error')] || 'Google sign-in failed.');
-    if (location.search) history.replaceState(null, '', '/');
     if (!ME.profile) { run(startInterview); return; }
     sys(`${ME.first}'s agent · @${ME.username}`);
     profileCard();
-    say(`Welcome back, ${esc(ME.first)}. What should we work on? You can also type or dictate a note.`);
-    if (!ME.google.connected) connectGoogleMsg();
+    say(`Welcome back, ${esc(ME.first)}. Just met someone? Tap the mic and tell me about it.`);
     mainChips();
   }
   (async () => {
     try {
       const r = await api('/api/me');
-      if (r.user) { ME = r.user; start(); } else {
-        showAuth();
-        const e = new URLSearchParams(location.search).get('google_error');
-        if (e) { authHint.textContent = GERR[e] || 'Google sign-in failed.'; authHint.className = 'hint err'; history.replaceState(null, '', '/'); }
-      }
+      if (r.user) { ME = r.user; start(); } else showAuth();
     } catch (e) { if (!(e instanceof NeedsSignin)) showAuth(); }
   })();
 })();
-</script>
-</body></html>
+</script></body></html>

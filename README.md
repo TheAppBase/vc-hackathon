@@ -2,22 +2,21 @@
 
 **Vision:** every person at a VC firm gets a personal AI agent. The agent interviews them to learn how they invest, then works the way they do. The agents share one firm memory and talk to each other, so the firm always knows who is talking to which founder and what happens next.
 
-Everything is real: no mock data. The app only shows what is in your Google account and your team's firm memory.
+**One data source: the event notes people record.** No inbox or calendar integrations and no mock data. After an event or a meeting, you tap the mic and say who you met. The agent does the rest.
 
-1. **Sign in.** Enter your name and a username. The username box checks availability as you type. If your account is linked to Google, you confirm sign-in with Google.
-2. **Build your agent.** A short interview (role, sectors and stages, the signal you trust, hard no's). Your answers become your agent's scoring weights.
-3. **Connect Google.** Gmail, Google Calendar and Google Chat are the only integrations.
-4. **Source founders.** The agent reads your primary inbox, drops vendors, spam and non-pitches, applies your hard no's, and ranks founders with your criteria (`engine.py`). You can draft a reply and send it with Gmail.
-5. **Who have I been talking to?** People from Gmail threads and Google Calendar meetings, plus your latest Google Chat messages, with what's overdue and what's next.
-6. **Dictate anything.** The mic fills the chat box live and has no time limit. It works during the interview too. Anything that isn't a request is saved as a note in firm memory.
-7. **Team.** Add people by username (it checks the username exists). Once both of you have added each other, your agents share notes, pipelines and who you're talking to, and "who knows Acme?" asks your teammates' agents.
+1. **Sign in.** Enter your name and a username. The username box checks availability as you type.
+2. **Build your agent.** A three-question interview (role, sectors and stages, the signal you trust). Your answers become your agent's scoring weights.
+3. **Record a note.** The mic fills the chat box live and has no time limit. It works during the interview too, and you can also type. For example: "Met Jonah Weiss from Patchbay at the Deal Flow hackathon. Ex-Stripe infra, webhook API, 1,800 GitHub stars, raising $1.2M pre-seed. Next step: intro to Cara by Monday." The agent reads out the founder, company, event, traction and next step. Nicrron does this when configured, keyword rules otherwise.
+4. **Who have I been talking to?** Every founder in your notes, where you met, the latest next step, and what's due or overdue.
+5. **Rank my founders.** Scores founders with your interview weights, using only what your notes say. "Draft follow-up" writes a message for you to copy; the agent never sends anything.
+6. **Team.** Add people by username (it checks the username exists). Once both of you have added each other, your agents share notes. When you record a note about someone a teammate already met, their agent tells you. You can also ask "who knows Patchbay?" or "what is my team working on?".
 
 ## Safety: every write is guarded
-Reading is always allowed. Writing includes sending an email, saving a note, and sharing your pipeline or contacts with the team. Each user picks a mode in Settings:
-- **Ask for permission** (default): every write shows an approval card and waits for your OK. PRISM is not used.
-- **Auto, guarded by PRISM**: each proposed write is submitted to PRISM as a trajectory and evaluated. A clear pass goes ahead and a block stops it. If PRISM is unreachable or unclear, the agent falls back to asking you (fail closed). LLM calls are traced to PRISM only in this mode.
+Reading is always allowed. The agent's only write is saving a note to the firm memory. Each user picks a mode in Settings:
+- **Ask for permission** (default): every note shows a Save / Don't save card with what the agent read from it. Nothing is sent to PRISM.
+- **Auto, guarded by PRISM**: PRISM watches the agent. Model calls, agent tool calls and errors are traced to PRISM under one session per sign-in, and each proposed note is reviewed by PRISM. A clear pass saves it and a block stops it. If PRISM is unreachable or unclear, the agent asks you instead (fail closed).
 
-Hard limits apply in both modes: at most 3 recipients and 25 emails a day per user, and no card numbers, API keys, private keys or passwords in what the agent writes. Every action is logged in firm memory and listed under Settings → Recent agent actions.
+In both modes the agent never saves secrets (API keys, private keys, passwords, card numbers). Every action is logged and listed under Settings → Recent agent actions. Settings also shows PRISM's credential and live-trace status from the PRISM setup doctor.
 
 ## Run
 ```bash
@@ -30,14 +29,12 @@ Without `BLOB_READ_WRITE_TOKEN`, data is stored in `runtime/store/` (local devel
 ## Deploy (Vercel)
 1. Import the repo. `app.py` exports the Flask `app`, so no framework preset is needed.
 2. Storage → create a **private** Blob store and connect it to the project (this adds `BLOB_READ_WRITE_TOKEN`).
-3. Set `SECRET_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `PRISM_API_KEY`, `PRISM_PROJECT_ID` (and optionally `NICRRON_API_KEY`).
-4. Google Cloud: create an OAuth client of type "Web application" with redirect URI `https://<your-domain>/auth/google/callback`. Enable the Gmail API, Google Calendar API and Google Chat API. The Chat API also needs a Chat app configured in the same project, even for reading. While the OAuth consent screen is in testing, add each user as a test user (Gmail scopes are restricted).
+3. Set `SECRET_KEY` and `PRISMTRACE_API_KEY` (`PRISM_API_KEY` also works), and optionally `NICRRON_API_KEY`. Redeploy.
 
 ## Files
-- `app.py`: Flask server: accounts, Google OAuth, agent skills, team, and the action gate
-- `page.html`: the single-page chat UI (sign-in, interview, dictation, approval cards, settings)
+- `app.py`: Flask server: accounts, note reading, founders, team, the write gate, PRISM tracing hooks
+- `page.html`: the single-page chat UI (sign-in, interview, recording, approval cards, settings)
 - `guard.py`: hard rules plus the PRISM review used in Auto mode
-- `google_api.py`: OAuth plus Gmail, Google Calendar and Google Chat
-- `store.py`: firm memory on Vercel Blob (`users/`, `notes/`, `pipeline/`, `contacts/`, `actions/`, `google/`)
-- `engine.py`: triage, extraction and scoring rules
-- `integrations.py`: Nicrron (optional LLM extraction) and PRISM tracing
+- `engine.py`: note extraction rules, follow-up dates and scoring
+- `integrations.py`: PRISM (tracing, sessions, setup doctor) and Nicrron
+- `store.py`: firm memory on Vercel Blob (`users/`, `notes/`, `actions/`)

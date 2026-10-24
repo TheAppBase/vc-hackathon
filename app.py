@@ -1,9 +1,10 @@
 """Last Touch (Track 1, sourcing). Flask app for Vercel (exports `app`).
 
-Every person at the firm signs in with a name and a username and gets a personal agent. The agent interviews them,
-reads their Google account (Gmail, Google Calendar, Google Chat), sources founders from their inbox with their own
-criteria, and shares who they are talking to with their team through the firm memory on Vercel Blob.
-Every write the agent makes goes through guard.py: Ask mode asks the user, Auto mode lets PRISM decide.
+Every person at the firm signs in with a name and a username and gets a personal agent. After an event or a meeting
+they record a quick note (dictated or typed). The agent reads each note for the founder, company, where they met and
+the next step, keeps track of who they have been talking to and what's overdue, ranks founders with their own criteria,
+and shares it all with their team through the firm memory on Vercel Blob. Recorded notes are the only data source.
+Every write goes through guard.py: Ask mode asks the user, Auto mode lets PRISM decide.
 
 Run locally: flask --app app run
 """
@@ -19,20 +20,18 @@ import json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
 import secrets  # noqa: E402
+import time  # noqa: E402
 from functools import wraps  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from flask import Flask, jsonify, redirect, request, session, url_for  # noqa: E402
-from werkzeug.middleware.proxy_fix import ProxyFix  # noqa: E402
+from flask import Flask, jsonify, request, session  # noqa: E402
 
 import engine  # noqa: E402
-import google_api as g  # noqa: E402
 import guard  # noqa: E402
 import integrations as ix  # noqa: E402
 import store  # noqa: E402
 
 app = Flask(__name__)
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 # Sessions must survive across serverless instances, so the key has to be stable. Falls back to one derived from the
 # Blob token (also a server secret) so a deploy works before SECRET_KEY is set.
 app.secret_key = os.getenv("SECRET_KEY") or (hashlib.sha256(("last-touch:" + store.TOKEN).encode()).hexdigest() if store.TOKEN
@@ -42,14 +41,13 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", S
 
 USER_RE = re.compile(r"^[a-z0-9_.-]{2,30}$")
 INTERVIEW = [
-    {"key": "role", "q": "Hi {name}, I'm your new agent. I'll learn how you work so I can source the way you do. What's your role, and where does most of your week go?",
+    {"key": "role", "q": "Hi {name}, I'm your new agent. After every event or meeting, record a quick note and I'll keep track of "
+                         "who you met and what's next. First, what's your role?",
      "chips": ["Associate: sourcing and first calls", "Partner: leading deals", "Talent partner: founders and hiring"]},
-    {"key": "focus", "q": "Which sectors and stages do you source in?",
+    {"key": "focus", "q": "Which sectors and stages do you invest in?",
      "chips": ["AI and devtools, pre-seed to seed", "Consumer and CPG, seed", "Fintech, seed to Series A"]},
     {"key": "signal", "q": "What makes you take a first call? Tell me the signal you trust most.",
      "chips": ["Technical founders with open-source traction", "Real revenue and repeat purchase", "A warm intro from someone I trust"]},
-    {"key": "nos", "q": "Last one. Any hard no's I should filter out for you?",
-     "chips": ["Token or crypto raises", "Agencies and services businesses", "No hard no's"]},
 ]
 ALL_SECTORS = ["ai", "devtools", "fintech", "consumer", "cpg", "climate", "health"]
 WEIGHTS = {
@@ -71,7 +69,19 @@ def now() -> str:
 
 
 def new_id() -> str:
-    return f"{int(dt.datetime.now().timestamp() * 1000)}-{secrets.token_hex(3)}"
+    return f"{int(time.time() * 1000)}-{secrets.token_hex(3)}"
+
+
+def _ts(iso: str) -> dt.datetime:
+    try:
+        d = dt.datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except ValueError:
+        return dt.datetime.fromtimestamp(0, dt.timezone.utc)
+    return d.replace(tzinfo=dt.timezone.utc) if d.tzinfo is None else d.astimezone(dt.timezone.utc)
+
+
+def nice_date(iso: str) -> str:
+    return _ts(iso).strftime("%a %b %d").replace(" 0", " ")
 
 
 # --------------------------------------------------------------------------- users
@@ -93,10 +103,8 @@ def mode_of(user: dict) -> str:
 
 
 def public(user: dict) -> dict:
-    gg = user.get("google") or {}
     return {"username": user["username"], "name": user["name"], "first": first(user["name"]), "profile": user.get("profile"),
-            "team": user.get("team", []), "mode": mode_of(user),
-            "google": {"connected": bool(gg.get("refresh_token")), "email": gg.get("email")}}
+            "team": user.get("team", []), "mode": mode_of(user)}
 
 
 def current() -> dict | None:
@@ -107,29 +115,51 @@ def current() -> dict | None:
     return user
 
 
+def start_session(u: str):
+    session.clear()
+    session.permanent = True
+    session["u"] = u
+    session["sid"] = f"lt-{u}-{secrets.token_hex(6)}"  # one PRISM session per sign-in, so traces group into a conversation
+
+
 def login_required(fn):
     @wraps(fn)
     def wrapper(*a, **kw):
         user = current()
         if not user:
             return jsonify({"error": "signin"}), 401
+        if not session.get("sid"):
+            session["sid"] = f"lt-{user['username']}-{secrets.token_hex(6)}"
         return fn(user, *a, **kw)
     return wrapper
 
 
-def google_token(user: dict) -> str:
-    return g.access_token(user["username"], user.get("google"))
+# --------------------------------------------------------------------------- PRISM tracing (Auto mode only)
+def agent_of(user: dict) -> tuple[str, str]:
+    return f"{first(user['name'])}'s agent", f"last-touch-{user['username']}"
 
 
-def needs_google():
-    return jsonify({"error": "google", "message": "Connect your Google account in Settings first."}), 409
+def traced(user: dict) -> bool:
+    return mode_of(user) == "auto"
 
 
+def trace_tool(user: dict, tool: str, inp: str, out: str, t0: float, status: str = "success"):
+    if traced(user):
+        name, aid = agent_of(user)
+        ix.TRACER.tool(name, aid, session.get("sid") or aid, tool, inp, out, int((time.time() - t0) * 1000), status)
+
+
+@app.teardown_request
+def _flush_traces(exc):
+    ix.TRACER.flush()
+
+
+# --------------------------------------------------------------------------- profile
 def build_profile(a: dict, name: str) -> dict:
     focus = str(a.get("focus") or "")
     fl = focus.lower()
     sectors = []
-    if any(k in fl for k in ("ai", "devtool", "dev tool", "infra", "developer")):
+    if re.search(r"\bai\b", fl) or any(k in fl for k in ("devtool", "dev tool", "infra", "developer")):
         sectors += ["ai", "devtools"]
     if any(k in fl for k in ("consumer", "cpg", "brand", "food", "retail")):
         sectors += ["consumer", "cpg"]
@@ -158,146 +188,181 @@ def build_profile(a: dict, name: str) -> dict:
     w = WEIGHTS[style]
     return {
         "name": name, "first": first(name), "role": str(a.get("role") or "Investor")[:80], "focus": focus[:80] or "Generalist",
-        "sectors": sectors, "stages": stages, "signal": str(a.get("signal") or "")[:100], "style": style,
-        "nos": str(a.get("nos") or "No hard no's")[:80], "weights": w,
+        "sectors": sectors, "stages": stages, "signal": str(a.get("signal") or "")[:100], "style": style, "weights": w,
         "weights_text": ", ".join(f"{LABEL[k]} {v}%" for k, v in sorted(w.items(), key=lambda kv: -kv[1]) if v),
     }
 
 
-# --------------------------------------------------------------------------- firm memory (team)
-def notes_of(u: str, limit: int = 20) -> list[dict]:
+# --------------------------------------------------------------------------- notes -> founders
+def extract(user: dict, text: str, when: dt.date) -> tuple[dict, str]:
+    """Read a note for founder, company, event and next step. Nicrron when configured, keyword rules otherwise."""
+    if ix.LLM_CLIENT.live:
+        name, aid = agent_of(user)
+        got = ix.LLM_CLIENT.json(engine.NOTE_SYSTEM.format(today=when.isoformat(), weekday=when.strftime("%A")), text[:4000],
+                                 name, session_id=session.get("sid"), trace=traced(user), agent_id=aid)
+        if got:
+            return engine.clean_note(got), "Nicrron"
+    return engine.clean_note(engine.heuristic_note(text, when)), "keyword rules"
+
+
+def notes_of(u: str, limit: int = 200) -> list[dict]:
+    """A user's notes, newest first."""
     paths = store.list_paths(f"notes/{u}/")[-limit:]
     return [n for n in (store.get(p) for p in reversed(paths)) if n]
 
 
+def _key(s: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+
+def founders_from(notes: list[dict]) -> list[dict]:
+    """Merge notes about the same founder (or company) into one record. Later notes update earlier ones."""
+    recs, index = [], {}
+    for n in sorted(notes, key=lambda n: n.get("created_at", "")):
+        x = n.get("extracted") or engine.clean_note(engine.heuristic_note(n.get("text", ""), _ts(n.get("created_at")).date()))
+        keys = [k for k in (_key(x.get("founder")), _key(x.get("company"))) if k]
+        if not keys:
+            continue
+        rec = next((index[k] for k in keys if k in index), None)
+        if rec is None:
+            rec = {**engine.EMPTY_NOTE, "metrics": {}, "background": [], "notes": [], "first_met": n.get("created_at")}
+            recs.append(rec)
+        for k in keys:
+            index[k] = rec
+        for f in ("founder", "company", "sector", "stage", "one_liner", "raising_usd"):
+            if x.get(f):
+                rec[f] = x[f]
+        rec["event"] = rec.get("event") or x.get("event")
+        rec["metrics"].update(x.get("metrics") or {})
+        rec["background"] = list(dict.fromkeys(rec["background"] + (x.get("background") or [])))[:6]
+        rec["next_step"], rec["next_due"] = x.get("next_step"), x.get("next_due")  # the latest note sets what's next
+        rec["last_touch"] = n.get("created_at")
+        rec["notes"].append({"id": n.get("id"), "text": n.get("text", ""), "created_at": n.get("created_at")})
+    for rec in recs:
+        rec["id"] = _key(rec.get("founder") or rec.get("company")).replace(" ", "-")
+    return recs
+
+
+def status_of(rec: dict, today: dt.date) -> tuple[str, str]:
+    if rec.get("next_step"):
+        if rec.get("next_due"):
+            d = dt.date.fromisoformat(rec["next_due"])
+            if d < today:
+                return "overdue", f"Overdue since {nice_date(rec['next_due'])}"
+            if d == today:
+                return "due", "Due today"
+            if d == today + dt.timedelta(days=1):
+                return "due", "Due tomorrow"
+            return "scheduled", f"Due {nice_date(rec['next_due'])}"
+        age = (today - _ts(rec["last_touch"]).date()).days
+        return ("overdue", f"Open for {age} days") if age > 7 else ("due", "Open")
+    return "warm", "No next step"
+
+
+def describe_rec(rec: dict) -> str:
+    who = rec.get("founder") or rec.get("company")
+    co = f" ({rec['company']})" if rec.get("founder") and rec.get("company") else ""
+    return f"{who}{co}"
+
+
+# --------------------------------------------------------------------------- firm memory (team)
 def team_memory(user: dict) -> list[dict]:
-    """What each teammate's agent has shared: notes, sourced founders and who they talk to."""
+    """What each teammate's agent shares. Only people who added each other share."""
     out = []
     for m in user.get("team", []):
         mate = load_user(m)
         if not mate or user["username"] not in mate.get("team", []):
             continue
+        notes = notes_of(m, 100)
         out.append({"username": m, "name": mate["name"], "first": first(mate["name"]),
-                    "focus": (mate.get("profile") or {}).get("focus"),
-                    "notes": notes_of(m, 15),
-                    "pipeline": (store.get(f"pipeline/{m}.json") or {}).get("items", []),
-                    "contacts": (store.get(f"contacts/{m}.json") or {}).get("items", [])})
+                    "focus": (mate.get("profile") or {}).get("focus"), "notes": notes, "founders": founders_from(notes)})
     return out
 
 
-def who_knows(mem: list[dict], *, email: str | None = None, names: list[str] = ()) -> list[dict]:
-    email = (email or "").lower()
-    names = [n.lower() for n in names if n and len(n) >= 3]
+def with_team_facts(rec: dict, mem: list[dict]) -> dict:
+    """Fill what the user's notes don't say (sector, stage, traction, raise) from teammates' notes on the same founder."""
+    keys = {k for k in (_key(rec.get("founder")), _key(rec.get("company"))) if k}
+    out, filled = {**rec, "metrics": dict(rec.get("metrics") or {})}, []
+    for mate in mem:
+        for r in mate["founders"]:
+            if not keys & {_key(r.get("founder")), _key(r.get("company"))}:
+                continue
+            for f in ("sector", "stage", "raising_usd", "founder", "company", "one_liner"):
+                if not out.get(f) and r.get(f):
+                    out[f] = r[f]
+                    filled.append(mate["first"])
+            for k, v in (r.get("metrics") or {}).items():
+                if k not in out["metrics"]:
+                    out["metrics"][k] = v
+                    filled.append(mate["first"])
+            out["background"] = list(dict.fromkeys((out.get("background") or []) + (r.get("background") or [])))
+    out["filled_from"] = sorted(set(filled))
+    return out
+
+
+def who_knows(mem: list[dict], names: list[str]) -> list[dict]:
+    keys = [_key(n) for n in names if n and len(_key(n)) >= 3]
+    if not keys:
+        return []
     hits = []
     for mate in mem:
-        for c in mate["contacts"]:
-            if (email and c.get("email") == email) or (c.get("name") or "").lower() in names:
-                hits.append({"who": mate["first"], "username": mate["username"], "kind": "contact",
-                             "text": f"{mate['first']} last talked to {c.get('name') or c.get('email')} on {str(c.get('last_touch', ''))[:10]} "
-                                     f"via {', '.join(c.get('channels', []))}."})
+        hit = None
+        for rec in mate["founders"]:
+            if _key(rec.get("founder")) in keys or _key(rec.get("company")) in keys:
+                met = f" at {rec['event']}" if rec.get("event") else ""
+                nxt = f" {mate['first']}'s next step: {rec['next_step']}." if rec.get("next_step") else " No open next step."
+                hit = {"who": mate["first"], "username": mate["username"],
+                       "text": f"{mate['first']} met {describe_rec(rec)}{met} on {nice_date(rec['first_met'])}, last noted "
+                               f"{nice_date(rec['last_touch'])}.{nxt}"}
                 break
-        for p in mate["pipeline"]:
-            if (email and p.get("email") == email) or any(x and x.lower() in names for x in (p.get("company"), p.get("founder"))):
-                hits.append({"who": mate["first"], "username": mate["username"], "kind": "pipeline",
-                             "text": f"{p.get('company') or p.get('founder')} is in {mate['first']}'s pipeline "
-                                     f"({p.get('score')}/100 on {mate['first']}'s thesis, {str(p.get('verdict', '')).lower()})."})
-                break
-        for n in mate["notes"]:
-            low = n.get("text", "").lower()
-            if any(re.search(rf"\b{re.escape(x)}\b", low) for x in names) or (email and email in low):
-                hits.append({"who": mate["first"], "username": mate["username"], "kind": "note",
-                             "text": f"{mate['first']}'s note from {str(n.get('created_at', ''))[:10]}: \"{n['text'][:220]}\""})
-                break
+        if not hit:
+            for n in mate["notes"]:
+                low = _key(n.get("text"))
+                if any(re.search(rf"\b{re.escape(k)}\b", low) for k in keys):
+                    hit = {"who": mate["first"], "username": mate["username"],
+                           "text": f"{mate['first']}'s note from {nice_date(n['created_at'])}: \"{n['text'][:220]}\""}
+                    break
+        if hit:
+            hits.append(hit)
     return hits
 
 
 # --------------------------------------------------------------------------- actions (every write goes through here)
-def describe(kind: str, p: dict) -> str:
-    if kind == "send_email":
-        return f"Send an email to {', '.join(p.get('to', []))}: \"{p.get('subject', '')}\""
-    if kind == "save_note":
-        return "Save this note to your firm memory"
-    if kind == "share_pipeline":
-        return f"Share {len(p.get('items', []))} sourced founders with your team's agents"
-    if kind == "share_contacts":
-        return f"Share who you're talking to ({len(p.get('items', []))} people, no message content) with your team's agents"
-    return kind
-
-
-def clean_payload(kind: str, p: dict) -> dict:
-    if kind == "send_email":
-        to = p.get("to") or []
-        to = [str(x).strip() for x in (to if isinstance(to, list) else str(to).split(",")) if str(x).strip()]
-        return {"to": to, "subject": str(p.get("subject") or "")[:300], "body": str(p.get("body") or "")[:6000],
-                "thread": str(p.get("thread") or "")[:40] or None}
-    if kind == "save_note":
-        return {"text": str(p.get("text") or "")[:9000], "source": "dictation" if p.get("source") == "dictation" else "typed"}
-    if kind == "share_pipeline":
-        keep = ("company", "founder", "email", "score", "verdict", "sector", "stage", "subject", "when")
-        return {"items": [{k: i.get(k) for k in keep} for i in (p.get("items") or [])[:200] if isinstance(i, dict)]}
-    if kind == "share_contacts":
-        keep = ("name", "email", "last_touch", "channels", "status")
-        return {"items": [{k: i.get(k) for k in keep} for i in (p.get("items") or [])[:200] if isinstance(i, dict)]}
-    raise ValueError(kind)
-
-
-def sent_today(user: dict) -> int:
-    s = user.get("sent") or {}
-    return s.get("n", 0) if s.get("day") == dt.date.today().isoformat() else 0
-
-
-def execute(user: dict, kind: str, p: dict) -> dict:
-    u = user["username"]
-    if kind == "send_email":
-        res = g.gmail_send(google_token(user), user["google"]["email"], p["to"], p["subject"], p["body"], p.get("thread"))
-        user["sent"] = {"day": dt.date.today().isoformat(), "n": sent_today(user) + 1}
-        save_user(user)
-        return {"message_id": res.get("id"), "text": f"Sent to {', '.join(p['to'])}."}
-    if kind == "save_note":
-        nid = new_id()
-        store.put(f"notes/{u}/{nid}.json", {"id": nid, "text": p["text"], "source": p["source"], "created_at": now()})
-        return {"note_id": nid, "text": "Saved to your firm memory. Your teammates' agents can see it."}
-    if kind == "share_pipeline":
-        store.put(f"pipeline/{u}.json", {"updated": now(), "items": p["items"]})
-        return {"text": "Shared. Your teammates' agents will see these founders are in your pipeline."}
-    if kind == "share_contacts":
-        store.put(f"contacts/{u}.json", {"updated": now(), "items": p["items"]})
-        return {"text": "Shared. Your teammates' agents now know who you're talking to."}
-    raise ValueError(kind)
+def view(act: dict) -> dict:
+    return {k: act.get(k) for k in ("id", "type", "summary", "payload", "status", "reason", "review", "result", "mode", "created_at")}
 
 
 def run_action(user: dict, act: dict):
     try:
-        act["result"] = execute(user, act["type"], act["payload"])
-        act["status"] = "done"
-    except g.NotConnected:
-        act["status"], act["reason"] = "failed", "Google is not connected"
+        if act["type"] != "save_note":
+            raise ValueError("Unknown action")
+        p = act["payload"]
+        store.put(f"notes/{user['username']}/{act['id']}.json",
+                  {"id": act["id"], "text": p["text"], "source": p["source"], "extracted": p["extracted"], "created_at": act["created_at"]})
+        act["status"], act["result"] = "done", {"text": "Saved to your firm memory. Your teammates' agents can see it."}
     except Exception as e:
         act["status"], act["reason"] = "failed", str(e)[:200]
-
-
-def view(act: dict) -> dict:
-    return {k: act.get(k) for k in ("id", "type", "summary", "payload", "status", "reason", "review", "result", "mode", "created_at")}
 
 
 @app.post("/api/actions")
 @login_required
 def api_action_propose(user):
+    t0 = time.time()
     body = request.get_json(silent=True) or {}
-    kind = body.get("type")
-    try:
-        p = clean_payload(kind, body.get("payload") or {})
-    except ValueError:
+    if body.get("type") != "save_note":
         return jsonify({"error": "Unknown action"}), 400
-    if kind == "send_email" and not (user.get("google") or {}).get("refresh_token"):
-        return needs_google()
-    mode = mode_of(user)
-    act = {"id": new_id(), "type": kind, "payload": p, "summary": describe(kind, p), "mode": mode, "created_at": now()}
-    why = guard.hard_rules(kind, p, sent_today(user))
+    p = body.get("payload") or {}
+    text = str(p.get("text") or "").strip()[:guard.MAX_NOTE + 1]
+    act = {"id": new_id(), "type": "save_note", "mode": mode_of(user), "created_at": now(), "summary": "Save this note to your firm memory"}
+    why = guard.hard_rules("save_note", {"text": text})
+    extracted, reader = (extract(user, text, dt.date.today()) if not why else (engine.clean_note({}), "none"))
+    act["payload"] = {"text": text, "source": "dictation" if p.get("source") == "dictation" else "typed", "extracted": extracted}
+    hits = who_knows(team_memory(user), [extracted.get("founder"), extracted.get("company")]) if not why else []
     if why:
         act["status"], act["reason"] = "blocked", why
-    elif mode == "auto":
-        act["review"] = guard.review(f"{first(user['name'])}'s agent", user["username"], act)
+    elif act["mode"] == "auto":
+        name, aid = agent_of(user)
+        act["review"] = guard.review(name, aid, session.get("sid") or aid, act)
         d = act["review"]["decision"]
         if d == "allow":
             run_action(user, act)
@@ -308,7 +373,9 @@ def api_action_propose(user):
     else:
         act["status"] = "needs_approval"
     store.put(f"actions/{user['username']}/{act['id']}.json", act)
-    return jsonify(view(act))
+    trace_tool(user, "save_note", text[:500], f"{act['status']}; read with {reader}; {len(hits)} teammate matches", t0,
+               "error" if act["status"] == "failed" else "success")
+    return jsonify({**view(act), "hits": hits, "reader": reader})
 
 
 @app.post("/api/actions/<aid>")
@@ -323,7 +390,7 @@ def api_action_decide(user, aid):
     if act["status"] != "needs_approval":
         return jsonify(view(act))
     if (request.get_json(silent=True) or {}).get("approve"):
-        why = guard.hard_rules(act["type"], act["payload"], sent_today(user))
+        why = guard.hard_rules(act["type"], act["payload"])
         if why:
             act["status"], act["reason"] = "blocked", why
         else:
@@ -349,15 +416,14 @@ def api_username(u):
     u = norm(u)
     if not USER_RE.match(u):
         return jsonify({"valid": False, "message": "Use 2 to 30 letters, numbers, dots, dashes or underscores."})
-    user = load_user(u)
-    return jsonify({"valid": True, "available": user is None, "exists": user is not None,
-                    "google": bool(user and (user.get("google") or {}).get("refresh_token"))})
+    exists = load_user(u) is not None
+    return jsonify({"valid": True, "available": not exists, "exists": exists})
 
 
 @app.post("/api/signup")
 def api_signup():
     b = request.get_json(silent=True) or {}
-    name, u = str(b.get("name") or "").strip()[:60], norm(b.get("username"))
+    name, u = " ".join(str(b.get("name") or "").split())[:60], norm(b.get("username"))
     if not name:
         return jsonify({"error": "Enter your name."}), 400
     if not USER_RE.match(u):
@@ -367,32 +433,29 @@ def api_signup():
         store.put(f"users/{u}.json", user, overwrite=False)
     except store.Exists:
         return jsonify({"error": f"@{u} is taken."}), 409
-    session.clear()
-    session.permanent = True
-    session["u"] = u
+    start_session(u)
     return jsonify({"user": public(user)})
 
 
 @app.post("/api/signin")
 def api_signin():
     b = request.get_json(silent=True) or {}
-    name, u = str(b.get("name") or "").strip(), norm(b.get("username"))
+    name, u = str(b.get("name") or ""), norm(b.get("username"))
     user = load_user(u)
     if not user:
         return jsonify({"error": f"No account called @{u}."}), 404
-    if (user.get("google") or {}).get("refresh_token"):
-        # Linked accounts prove who they are with Google.
-        return jsonify({"redirect": url_for("google_start", mode="signin", u=u)})
     if " ".join(name.lower().split()) != " ".join(user["name"].lower().split()):
         return jsonify({"error": "That name doesn't match this username."}), 403
-    session.clear()
-    session.permanent = True
-    session["u"] = u
+    start_session(u)
     return jsonify({"user": public(user)})
 
 
 @app.post("/api/signout")
 def api_signout():
+    user, sid = current(), session.get("sid")
+    if user and sid and traced(user):
+        name, aid = agent_of(user)
+        ix.TRACER.end_session(sid, aid, name)
     session.clear()
     return jsonify({"ok": True})
 
@@ -406,7 +469,8 @@ def api_me():
 @app.post("/api/profile")
 @login_required
 def api_profile(user):
-    answers = {k: str(v)[:200] for k, v in (request.get_json(silent=True) or {}).items() if k in {q["key"] for q in INTERVIEW}}
+    keys = {q["key"] for q in INTERVIEW}
+    answers = {k: str(v)[:200] for k, v in (request.get_json(silent=True) or {}).items() if k in keys}
     user["answers"] = answers
     user["profile"] = build_profile(answers, user["name"])
     save_user(user)
@@ -419,257 +483,62 @@ def api_settings(user):
     b = request.get_json(silent=True) or {}
     if b.get("mode") in ("ask", "auto"):
         if b["mode"] == "auto" and not guard.live():
-            return jsonify({"error": "Auto mode needs PRISM (PRISM_API_KEY and PRISM_PROJECT_ID)."}), 400
+            return jsonify({"error": "Auto mode needs PRISM (PRISMTRACE_API_KEY on the server)."}), 400
         user.setdefault("settings", {})["mode"] = b["mode"]
         save_user(user)
     return jsonify({"user": public(user)})
 
 
-# --------------------------------------------------------------------------- Google OAuth
-def redirect_uri() -> str:
-    return os.getenv("GOOGLE_REDIRECT_URI") or url_for("google_callback", _external=True)
-
-
-@app.get("/auth/google")
-def google_start():
-    if not g.CONFIGURED:
-        return redirect("/?google_error=not_configured")
-    mode = request.args.get("mode", "connect")
-    state = secrets.token_urlsafe(24)
-    hint = None
-    if mode == "connect":
-        user = current()
-        if not user:
-            return redirect("/")
-        target, scopes = user["username"], g.SCOPES
-    elif mode == "signin":
-        target = norm(request.args.get("u"))
-        user = load_user(target)
-        if not user:
-            return redirect("/")
-        hint, scopes = (user.get("google") or {}).get("email"), g.SIGNIN_SCOPES
-    else:
-        mode, target, scopes = "login", None, g.SIGNIN_SCOPES
-    session["oauth"] = {"state": state, "mode": mode, "u": target}
-    return redirect(g.auth_url(redirect_uri(), state, scopes, hint))
-
-
-@app.get("/auth/google/callback")
-def google_callback():
-    pending = session.pop("oauth", None) or {}
-    if not pending or request.args.get("state") != pending.get("state"):
-        return redirect("/?google_error=state")
-    if request.args.get("error") or not request.args.get("code"):
-        return redirect("/?google_error=" + (request.args.get("error") or "cancelled"))
-    try:
-        tok = g.exchange(request.args["code"], redirect_uri())
-    except Exception:
-        return redirect("/?google_error=exchange")
-    info = tok["userinfo"]
-    email = (info.get("email") or "").lower()
-    if not email or not info.get("email_verified", True):
-        return redirect("/?google_error=email")
-    linked = (store.get(f"google/{email}.json") or {}).get("username")
-    mode = pending["mode"]
-    if mode in ("signin", "login"):
-        u = pending.get("u") if mode == "signin" else linked
-        user = load_user(u) if u else None
-        if not user or (user.get("google") or {}).get("email") != email:
-            return redirect("/?google_error=" + ("nomatch" if mode == "signin" else "noaccount"))
-        session.clear()
-        session.permanent = True
-        session["u"] = u
-        return redirect("/")
-    user = current()
-    if not user or user["username"] != pending.get("u"):
-        return redirect("/")
-    if linked and linked != user["username"]:
-        return redirect("/?google_error=linked")
-    old = user.get("google") or {}
-    refresh = tok.get("refresh_token") or (old.get("refresh_token") if old.get("email") == email else None)
-    if not refresh:
-        return redirect("/?google_error=offline")
-    if old.get("email") and old["email"] != email:
-        store.delete(f"google/{old['email']}.json")
-    user["google"] = {"email": email, "name": info.get("name"), "refresh_token": refresh, "scope": tok.get("scope"),
-                      "connected_at": now()}
-    save_user(user)
-    store.put(f"google/{email}.json", {"username": user["username"]})
-    g.remember(user["username"], tok["access_token"], tok.get("expires_in", 3600))
-    return redirect("/?google=connected")
-
-
-@app.post("/api/google/disconnect")
+@app.get("/api/prism")
 @login_required
-def api_google_disconnect(user):
-    gg = user.pop("google", None) or {}
-    if gg.get("refresh_token"):
-        g.revoke(gg["refresh_token"])
-    if gg.get("email"):
-        store.delete(f"google/{gg['email']}.json")
-    g.forget(user["username"])
-    save_user(user)
-    return jsonify({"user": public(user)})
+def api_prism(user):
+    return jsonify({"configured": guard.live(), **ix.TRACER.status()} if guard.live() else {"configured": False})
 
 
-# --------------------------------------------------------------------------- agent skills (reads)
-def _ts(iso: str) -> dt.datetime:
-    """Parse a Google timestamp (RFC 3339 or an all-day date) to UTC."""
-    try:
-        d = dt.datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
-    except ValueError:
-        return dt.datetime.fromtimestamp(0, dt.timezone.utc)
-    return d.replace(tzinfo=dt.timezone.utc) if d.tzinfo is None else d.astimezone(dt.timezone.utc)
-
-
-def _utc(iso: str) -> str:
-    return _ts(iso).isoformat(timespec="seconds")
-
-
-def _days(iso: str) -> int:
-    return (dt.datetime.now(dt.timezone.utc) - _ts(iso)).days
-
-
-def _nice(iso: str) -> str:
-    d = _ts(iso)
-    return d.strftime("%a %b %d") + ("" if len(str(iso)) <= 10 or d.strftime("%H:%M:%S") == "00:00:00" else d.strftime(", %H:%M UTC"))
-
-
-@app.get("/api/conversations")
+# --------------------------------------------------------------------------- agent skills (reads, always allowed)
+@app.get("/api/founders")
 @login_required
-def api_conversations(user):
-    try:
-        tok = google_token(user)
-    except g.NotConnected:
-        return needs_google()
-    me = user["google"]["email"]
-    errors, threads, events, chats = {}, [], [], []
-    for label, fn in (("Gmail", lambda: g.gmail_threads(tok, me)), ("Google Calendar", lambda: g.calendar_events(tok, me)),
-                      ("Google Chat", lambda: g.chat_recent(tok))):
-        try:
-            res = fn()
-        except Exception as e:
-            errors[label] = str(e)[:200]
-            continue
-        if label == "Gmail":
-            threads = res
-        elif label == "Google Calendar":
-            events = res
-        else:
-            chats = res
-    people: dict[str, dict] = {}
-    for t in sorted(threads, key=lambda t: t["when"]):
-        t["when"] = _utc(t["when"])
-        for email, name in t["people"].items():
-            p = people.setdefault(email, {"email": email, "name": name, "channels": [], "last_touch": t["when"]})
-            p.update(name=p["name"] if p["name"] != email else name, last_touch=max(p["last_touch"], t["when"]))
-            if "Gmail" not in p["channels"]:
-                p["channels"].append("Gmail")
-            p["thread"] = t
-    for e in events:
-        upcoming = _ts(e["start"]) >= dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=1)
-        start = _utc(e["start"])
-        for email, name in e["people"].items():
-            p = people.setdefault(email, {"email": email, "name": name, "channels": [], "last_touch": start if not upcoming else ""})
-            if "Google Calendar" not in p["channels"]:
-                p["channels"].append("Google Calendar")
-            if upcoming:
-                p.setdefault("next_meeting", e)
-            else:
-                p["last_meeting"] = {**e, "start": start}
-                p["last_touch"] = max(p["last_touch"], start)
-    rows = []
-    for p in people.values():
-        t, nm, lm = p.get("thread"), p.get("next_meeting"), p.get("last_meeting")
-        fn = first(p["name"]) or p["email"]
-        if nm:
-            status, due, nxt = "scheduled", _nice(nm["start"]), f"Prep for \"{nm['title']}\""
-            summary = f"Meeting booked: {nm['title']}"
-        elif t and not t["last_from_me"]:
-            age = _days(t["when"])
-            status = "overdue" if age > 2 else "due"
-            due = f"{age} days without a reply" if age > 2 else "Reply due"
-            nxt, summary = f"Reply to {fn}", f"{t['subject']}: {t['snippet'][:140]}"
-        elif lm and (not t or t["when"] < lm["start"]):
-            status, due, nxt = "due", f"Met {_nice(lm['start'])}", f"Send {fn} a follow-up"
-            summary = f"Meeting: {lm['title']}"
-        elif t:
-            age = _days(t["when"])
-            status = "due" if age > 7 else "warm"
-            due = f"Quiet for {age} days" if age > 7 else "Waiting on them"
-            nxt, summary = (f"Nudge {fn}" if age > 7 else "Nothing yet"), f"{t['subject']}: {t['snippet'][:140]}"
-        else:
-            continue
-        rows.append({"name": p["name"], "email": p["email"], "channels": p["channels"], "last_touch": p["last_touch"],
-                     "when": _nice(p["last_touch"]) if p["last_touch"] else "Upcoming", "status": status, "due": due, "next": nxt, "summary": summary,
-                     "thread": t["id"] if t else None, "subject": t["subject"] if t else None})
-    order = {"overdue": 0, "due": 1, "scheduled": 2, "warm": 3}
-    rows.sort(key=lambda r: r["last_touch"], reverse=True)
-    rows = sorted(rows, key=lambda r: order.get(r["status"], 9))[:30]
-    return jsonify({"people": rows, "chat": chats[:8], "errors": errors, "email": me})
-
-
-def _nos_filter(profile: dict, msg: dict) -> str | None:
-    nos, text = (profile.get("nos") or "").lower(), f"{msg.get('subject', '')} {msg.get('text', '')}".lower()
-    if ("crypto" in nos or "token" in nos) and any(w in text for w in ("token", "crypto", "web3", "blockchain", "nft")):
-        return "Your hard no: token or crypto raise"
-    if ("agenc" in nos or "service" in nos) and any(w in text for w in ("agency", "consultancy", "services business")):
-        return "Your hard no: agency or services business"
-    return None
-
-
-@app.get("/api/source")
-@login_required
-def api_source(user):
+def api_founders(user):
+    """Everyone the user has recorded notes about: what's next, and how they score on the user's criteria."""
+    t0 = time.time()
+    notes = notes_of(user["username"])
+    recs = founders_from(notes)
     profile = user.get("profile")
-    if not profile:
-        return jsonify({"error": "interview", "message": "Finish the interview first."}), 409
-    try:
-        tok = google_token(user)
-        me = user["google"]["email"]
-        msgs = g.gmail_inbound(tok, me)
-    except g.NotConnected:
-        return needs_google()
-    except Exception as e:
-        return jsonify({"error": "gmail", "message": f"Gmail: {str(e)[:200]}"}), 502
-    member = {"sectors": profile["sectors"], "stages": profile["stages"], "weights": profile["weights"]}
-    trace = mode_of(user) == "auto"
-    agent = f"{first(user['name'])}'s agent"
+    member = {"sectors": profile["sectors"], "stages": profile["stages"], "weights": profile["weights"]} if profile else None
     mem = team_memory(user)
-    leads, dropped = [], []
-    for m in msgs:
-        ext = None
-        if ix.LLM_CLIENT.live:
-            got = ix.LLM_CLIENT.json(engine.EXTRACT_SYSTEM, f"From: {m['from_name']} <{m['from_email']}>\nSubject: {m['subject']}\n\n{m['text'][:3000]}",
-                                     agent, trace=trace)
-            ext = {**engine.EMPTY_EXT, **got} if got else None
-        ext = ext or engine.heuristic_extract(m)
-        decision, reason = engine.triage(m, ext)
-        no = _nos_filter(profile, m)
-        if decision == "drop" or no:
-            dropped.append({"from": m["from_name"], "subject": m["subject"], "reason": no or reason})
-            continue
-        s = engine.score_member(ext, member)
-        score, thesis = s["score"], s["features"]["thesis"]
-        verdict = ("Outside your thesis" if thesis == 0 else "Take the first call" if score >= 65
-                   else "Keep warm" if score >= 45 else "Pass")
-        top = sorted(((k, v) for k, v in s["parts"].items() if v), key=lambda kv: -kv[1])[:2]
-        why = ", ".join(f"{LABEL[k]} {v:g}/{member['weights'][k]}" for k, v in top)
-        if ext.get("closing_weeks") and ext["closing_weeks"] <= 8:
-            why += f". Closing in {ext['closing_weeks']:g} weeks"
-        founder = ext.get("founder") or m["from_name"]
-        known = who_knows(mem, email=m["from_email"], names=[ext.get("company"), founder])
-        leads.append({
-            "id": m["id"], "thread": m["thread"], "email": m["from_email"], "founder": founder, "company": ext.get("company"),
-            "subject": m["subject"], "one_liner": ext.get("one_liner") or m["subject"], "sector": ext.get("sector") or "unknown",
-            "stage": ext.get("stage") or "stage not stated", "score": score, "verdict": verdict, "why": why or "little to go on",
-            "traction": engine.metrics_line(ext.get("metrics")), "background": "; ".join(ext.get("background") or []) or "Not stated",
-            "raise": engine.money(ext.get("raising_usd")), "when": m["when"][:10], "known": known,
-            "draft": f"Hi {first(founder) or 'there'},\n\nThanks for reaching out about {ext.get('company') or 'what you are building'}. "
-                     f"I'd love to learn more. Do you have 20 minutes next week?\n\nBest,\n{first(user['name'])}",
-        })
-    leads.sort(key=lambda lead: (lead["verdict"] == "Outside your thesis", -lead["score"]))
-    return jsonify({"scanned": len(msgs), "leads": leads, "dropped": dropped, "extractor": "Nicrron" if ix.LLM_CLIENT.live else "keyword rules"})
+    today = dt.date.today()
+    out = []
+    for r in recs:
+        st, due = status_of(r, today)
+        row = {"id": r["id"], "founder": r.get("founder"), "company": r.get("company"), "event": r.get("event"),
+               "sector": r.get("sector"), "stage": r.get("stage"), "one_liner": r.get("one_liner"),
+               "next_step": r.get("next_step"), "status": st, "due": due, "first_met": nice_date(r["first_met"]),
+               "last_touch": r["last_touch"], "when": nice_date(r["last_touch"]), "notes": len(r["notes"]),
+               "latest": r["notes"][-1]["text"][:240], "traction": engine.metrics_line(r.get("metrics")),
+               "raise": engine.money(r.get("raising_usd")), "background": "; ".join(r.get("background") or []),
+               "known": who_knows(mem, [r.get("founder"), r.get("company")])}
+        if member:
+            facts = with_team_facts(r, mem)
+            row.update(sector=facts.get("sector"), stage=facts.get("stage"), traction=engine.metrics_line(facts.get("metrics")),
+                       filled_from=facts["filled_from"])
+            row["raise"] = engine.money(facts.get("raising_usd"))
+            s = engine.score_member({**facts, "warm_intro": bool(row["known"])}, member)
+            top = sorted(((k, v) for k, v in s["parts"].items() if v), key=lambda kv: -kv[1])[:2]
+            row.update(score=s["score"], verdict=("Outside your thesis" if s["features"]["thesis"] == 0 else
+                                                  "Take the next call" if s["score"] >= 65 else
+                                                  "Keep warm" if s["score"] >= 45 else "Pass"),
+                       why=", ".join(f"{LABEL[k]} {v:g}/{member['weights'][k]}" for k, v in top) or "little to go on")
+        out.append(row)
+    out.sort(key=lambda r: r["last_touch"], reverse=True)
+    trace_tool(user, "list_founders", f"{len(notes)} notes", f"{len(out)} founders, "
+               f"{sum(r['status'] in ('due', 'overdue') for r in out)} need a follow-up", t0)
+    return jsonify({"founders": out, "notes": len(notes), "unlinked": len(notes) - sum(r["notes"] for r in out)})
+
+
+@app.get("/api/notes")
+@login_required
+def api_notes(user):
+    return jsonify({"notes": notes_of(user["username"], 20)})
 
 
 @app.get("/api/team")
@@ -712,39 +581,28 @@ def api_team_remove(user, u):
 @app.get("/api/team/activity")
 @login_required
 def api_team_activity(user):
+    t0 = time.time()
     mem = team_memory(user)
-    return jsonify({"team": [{"username": m["username"], "name": m["name"], "focus": m["focus"], "notes": m["notes"][:3],
-                              "pipeline": m["pipeline"][:4], "contacts": len(m["contacts"]),
-                              "due": [c for c in m["contacts"] if c.get("status") in ("due", "overdue")][:3]} for m in mem],
-                    "pending": [u for u in user.get("team", []) if u not in {m["username"] for m in mem}]})
+    today = dt.date.today()
+    team = []
+    for m in mem:
+        recent = sorted(m["founders"], key=lambda r: r["last_touch"], reverse=True)
+        team.append({"username": m["username"], "name": m["name"], "focus": m["focus"], "count": len(m["founders"]),
+                     "founders": [{"who": describe_rec(r), "event": r.get("event"), "when": nice_date(r["last_touch"]),
+                                   "next_step": r.get("next_step"), "status": status_of(r, today)[0]} for r in recent[:4]],
+                     "latest": m["notes"][0]["text"][:200] if m["notes"] else None})
+    trace_tool(user, "team_activity", f"{len(user.get('team', []))} teammates", f"{len(team)} agents shared", t0)
+    return jsonify({"team": team, "pending": [u for u in user.get("team", []) if u not in {m["username"] for m in mem}]})
 
 
 @app.get("/api/team/search")
 @login_required
 def api_team_search(user):
+    t0 = time.time()
     q = str(request.args.get("q") or "").strip()[:80]
-    email = request.args.get("email")
-    return jsonify({"hits": who_knows(team_memory(user), email=email, names=[q])})
-
-
-@app.post("/api/notes/check")
-@login_required
-def api_notes_check(user):
-    """Before saving a note, find which founders and companies it mentions that teammates already know."""
-    text = str((request.get_json(silent=True) or {}).get("text") or "").lower()
-    mem = team_memory(user)
-    names = set()
-    for m in mem:
-        names.update(x for p in m["pipeline"] for x in (p.get("company"), p.get("founder")) if x)
-        names.update(c["name"] for c in m["contacts"] if c.get("name") and "@" not in c["name"])
-    mentioned = [n for n in names if len(n) >= 3 and re.search(rf"\b{re.escape(n.lower())}\b", text)]
-    return jsonify({"hits": who_knows(mem, names=mentioned) if mentioned else []})
-
-
-@app.get("/api/notes")
-@login_required
-def api_notes(user):
-    return jsonify({"notes": notes_of(user["username"], 20)})
+    hits = who_knows(team_memory(user), [q])
+    trace_tool(user, "who_knows", q, f"{len(hits)} teammate replies", t0)
+    return jsonify({"hits": hits})
 
 
 # --------------------------------------------------------------------------- page
@@ -759,11 +617,10 @@ ICONS = {
     "up": '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
     "userplus": '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/>',
     "shield": '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
-    "Gmail": '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 5L2 7"/>',
-    "Google Calendar": '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
-    "Google Chat": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+    "note": '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>',
+    "list": '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
     "stop": '<rect x="6" y="6" width="12" height="12" rx="2"/>',
-    "send": '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+    "copy": '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
     "check": '<path d="M20 6 9 17l-5-5"/>',
 }
 PAGE = (Path(__file__).parent / "page.html").read_text()
@@ -771,8 +628,8 @@ PAGE = (Path(__file__).parent / "page.html").read_text()
 
 @app.get("/")
 def index():
-    data = {"icons": ICONS, "interview": INTERVIEW, "google": g.CONFIGURED, "prism": guard.live(),
-            "llm": ix.LLM_CLIENT.live, "store": "Vercel Blob" if store.LIVE else "local files"}
+    data = {"icons": ICONS, "interview": INTERVIEW, "prism": guard.live(), "llm": ix.LLM_CLIENT.live,
+            "store": "Vercel Blob" if store.LIVE else "local files"}
     blob = json.dumps(data).replace("</", "<\\/")
     return PAGE.replace("__DATA__", blob)
 
