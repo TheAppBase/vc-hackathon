@@ -1,0 +1,599 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Last Touch</title><style>
+:root{--text:#1d1d1f;--muted:rgba(29,29,31,.6);--glass:rgba(255,255,255,.42);--glass-strong:rgba(255,255,255,.64);--edge:rgba(255,255,255,.72);
+--line:rgba(29,29,31,.1);--shadow:0 10px 40px rgba(16,44,52,.18),0 1px 2px rgba(16,44,52,.08);--blue:#0a84ff;--red:#ff3b30;--orange:#ff9500;
+--green:#34c759;--gray:#8e8e93;--solid:#eef3f2;--grad:linear-gradient(180deg,#3d9bff,#0a84ff);
+--sky:linear-gradient(180deg,#a7cdd2 0%,#bcd6d3 30%,#cfdcd4 48%,#8fae9f 66%,#55776d 82%,#2f4a47 100%)}
+@media (prefers-color-scheme:dark){:root{--text:#f5f5f7;--muted:rgba(245,245,247,.62);--glass:rgba(28,34,38,.5);--glass-strong:rgba(38,44,48,.74);
+--edge:rgba(255,255,255,.16);--line:rgba(255,255,255,.1);--shadow:0 10px 40px rgba(0,0,0,.45);--solid:#252b2e;
+--sky:linear-gradient(180deg,#0e2a33 0%,#16343a 35%,#1f3d3b 55%,#13282a 80%,#0a1516 100%)}}
+*{box-sizing:border-box}html{background:#2f4a47}
+body{margin:0;height:100vh;height:100dvh;overflow:hidden;color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",sans-serif;
+-webkit-font-smoothing:antialiased;background:var(--sky)}
+body:before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;background:radial-gradient(60% 40% at 80% 70%,rgba(64,110,96,.55),transparent 70%),
+radial-gradient(50% 30% at 15% 75%,rgba(214,120,72,.26),transparent 70%),radial-gradient(70% 45% at 50% 0%,rgba(255,255,255,.35),transparent 70%)}
+button{font:inherit;color:inherit;cursor:pointer}.ic{flex:none;vertical-align:-3px}
+.glass{background:var(--glass-strong);border:1px solid var(--edge);box-shadow:var(--shadow),inset 0 1px 0 rgba(255,255,255,.55);
+-webkit-backdrop-filter:blur(28px) saturate(180%);backdrop-filter:blur(28px) saturate(180%)}
+.app{height:100%;display:flex;flex-direction:column}
+.chat{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:4px;padding:72px max(20px,calc(50% - 440px)) 12px;scroll-behavior:smooth}
+.msg{display:flex;gap:10px;align-items:flex-end;padding:3px 0;animation:in .25s ease-out}
+@keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.avatar{display:inline-grid;place-items:center;flex:none;width:34px;height:34px;border-radius:50%;color:#fff;font-weight:700;font-size:13px;
+background:linear-gradient(160deg,color-mix(in srgb,var(--hue,#8e8e93) 65%,#fff),var(--hue,#8e8e93));box-shadow:inset 0 1px 0 rgba(255,255,255,.5),0 2px 8px rgba(0,0,0,.15)}
+.avatar.me-agent{--hue:#0a84ff}
+.bubble{background:var(--glass-strong);border:1px solid var(--edge);border-radius:20px 20px 20px 6px;padding:9px 14px;max-width:min(640px,82%);
+-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);box-shadow:0 2px 10px rgba(16,44,52,.08)}
+.bubble b.who{display:block;font-size:12.5px;color:var(--muted);font-weight:600;margin-bottom:1px}
+.msg.me{justify-content:flex-end}.msg.me .bubble{background:var(--grad);color:#fff;border-color:transparent;border-radius:20px 20px 6px 20px}
+.msg.sys{justify-content:center}.msg.sys span{font-size:12.5px;color:var(--muted);padding:4px 12px;border-radius:999px;background:var(--glass)}
+.typing .bubble{display:flex;gap:4px;padding:13px 14px}.typing i{width:7px;height:7px;border-radius:50%;background:var(--muted);animation:dot 1s infinite}
+.typing i:nth-child(2){animation-delay:.15s}.typing i:nth-child(3){animation-delay:.3s}@keyframes dot{0%,80%,100%{opacity:.25}40%{opacity:1}}
+.indent{margin-left:44px}
+.toolcard{max-width:600px;padding:8px 12px;border-radius:14px;font-size:12.5px;background:var(--glass);border:1px dashed var(--edge);animation:in .25s ease-out}
+.toolcard .th{display:flex;align-items:center;gap:6px;color:var(--muted);flex-wrap:wrap}.toolcard .th .ic{color:var(--blue)}
+.toolcard .tk{font-weight:700;text-transform:uppercase;letter-spacing:.04em;font-size:10.5px;color:var(--blue)}
+.toolcard .st{margin-left:auto;font-size:11px}.toolcard.running .st{color:var(--orange)}.toolcard .st.ok{color:var(--green)}
+.toolcard code{display:block;margin:3px 0 1px;font:12.5px ui-monospace,"SF Mono",Menlo,monospace;word-break:break-word}.toolcard .tr{color:var(--muted)}
+.card{background:var(--glass-strong);border:1px solid var(--edge);border-radius:18px;padding:14px 16px;box-shadow:0 4px 18px rgba(16,44,52,.1);animation:in .3s ease-out}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;max-width:860px}
+.lead .top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.lead h4{margin:0;font-size:16px}.lead small{color:var(--muted);display:block}
+.ring{--p:0;flex:none;width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:13px;
+background:radial-gradient(closest-side,var(--solid) 78%,transparent 80%),conic-gradient(var(--blue) calc(var(--p)*1%),rgba(127,127,127,.2) 0)}
+.lead p{margin:8px 0;font-size:14px}.meta{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.pill{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;padding:2px 9px;border-radius:999px;background:var(--glass);border:1px solid var(--edge);color:var(--muted)}
+.pill.s-hot,.pill.s-due,.pill.v-take{color:#c93400;background:rgba(255,149,0,.15);border-color:transparent}
+.pill.s-overdue{color:var(--red);background:rgba(255,59,48,.13);border-color:transparent}.pill.s-scheduled,.pill.v-warm{color:var(--blue);background:rgba(10,132,255,.12);border-color:transparent}
+.pill.s-park,.pill.s-parked,.pill.s-warm,.pill.s-pass{color:var(--gray);background:rgba(142,142,147,.15);border-color:transparent}
+@media (prefers-color-scheme:dark){.pill.s-hot,.pill.s-due,.pill.v-take{color:#ffb340}}
+.why{font-size:12.5px;color:var(--muted)}.acts{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border-radius:999px;font-weight:600;font-size:13px;background:var(--glass);border:1px solid var(--edge);
+box-shadow:inset 0 1px 0 rgba(255,255,255,.5)}.btn.primary{background:var(--grad);color:#fff;border-color:transparent}.btn:hover{filter:brightness(1.05)}
+.profile{max-width:560px}.profile .head{display:flex;gap:12px;align-items:center;margin-bottom:8px}.profile .head b{font-size:17px;display:block}
+.kv{display:grid;grid-template-columns:110px 1fr;gap:4px 12px;font-size:13.5px;margin:0}.kv dt{color:var(--muted)}.kv dd{margin:0}
+.bars{display:grid;gap:5px;margin-top:10px}.bar{display:grid;grid-template-columns:130px 1fr 34px;gap:8px;align-items:center;font-size:12px;color:var(--muted)}
+.bar span.t{height:6px;border-radius:999px;background:rgba(127,127,127,.18);overflow:hidden}.bar span.t i{display:block;height:100%;background:var(--grad);border-radius:999px}
+.rows{max-width:760px;padding:6px 16px}.row{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.row:first-child{border-top:0}.src{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;background:var(--glass);border:1px solid var(--edge);color:var(--blue);flex:none}
+.row b{font-weight:600}.row small{display:block;color:var(--muted);font-size:12.5px}.row .right{text-align:right;font-size:12px;color:var(--muted)}
+.draft{white-space:pre-wrap;font-size:14px;background:var(--glass);border:1px solid var(--edge);border-radius:12px;padding:10px 12px;margin:6px 0}
+.bottom{padding:0 max(14px,calc(50% - 450px)) 16px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;justify-content:center}
+.chip{padding:7px 13px;border-radius:999px;font-size:13px;font-weight:500;background:var(--glass-strong);border:1px solid var(--edge);
+-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);display:inline-flex;align-items:center;gap:6px}
+.chip.on{background:var(--grad);color:#fff;border-color:transparent}.chip.go{background:var(--text);color:var(--glass-strong);border-color:transparent}
+.composer{display:flex;gap:8px;align-items:center;padding:6px;border-radius:999px}
+.composer input{flex:1;min-width:0;border:0;background:transparent;font:inherit;color:var(--text);padding:8px 12px;outline:none}
+.round{width:38px;height:38px;border-radius:50%;border:0;display:grid;place-items:center;flex:none}
+.round.send{background:var(--grad);color:#fff}.round.mic{background:var(--glass);border:1px solid var(--edge)}
+.corner{position:fixed;top:16px;right:18px;z-index:30;width:40px;height:40px;border-radius:50%;display:grid;place-items:center}
+.sheet{width:min(400px,100vw);height:100vh;height:100dvh;max-height:none;margin:0 0 0 auto;padding:22px 22px 30px;border-radius:22px 0 0 22px;border-right:0;
+overflow-y:auto;color:var(--text)}
+.sheet[open]{animation:slide .22s ease-out}@keyframes slide{from{transform:translateX(40px);opacity:0}to{transform:none;opacity:1}}
+dialog::backdrop{background:rgba(10,20,22,.25);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+.sheet-head{display:flex;justify-content:space-between;align-items:center}.sheet h2{margin:0;font-size:20px}
+.sheet h3{font-size:12.5px;color:var(--muted);font-weight:600;margin:20px 0 6px;text-transform:uppercase;letter-spacing:.04em}
+.list{list-style:none;margin:0;padding:0}.list li{display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
+.list li:first-child{border-top:0}.list li small{display:block;color:var(--muted);font-size:12px}.list li .end{margin-left:auto}
+.toggle{width:40px;height:24px;border-radius:999px;border:0;background:rgba(127,127,127,.3);position:relative;transition:background .2s;flex:none}
+.toggle:after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .2s}
+.toggle.on{background:var(--green)}.toggle.on:after{transform:translateX(16px)}
+.add{display:flex;gap:6px;padding:5px;border-radius:999px;background:var(--glass);border:1px solid var(--edge)}
+.add input{flex:1;min-width:0;border:0;background:transparent;font:inherit;color:var(--text);padding:6px 10px;outline:none}
+.hint{color:var(--muted);font-size:12px;margin:8px 2px 0}.hint.err{color:var(--red)}.rm{background:none;border:0;color:var(--muted);font-size:12.5px}
+.small{color:var(--muted);font-size:12.5px}
+@media (max-width:620px){.chat{padding:64px 12px 10px}.indent{margin-left:0}.bubble{max-width:88%}.corner{top:10px;right:10px}
+.kv{grid-template-columns:90px 1fr}.bar{grid-template-columns:100px 1fr 30px}.chips{justify-content:flex-start;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}
+.chip{flex:none}.bottom{padding:0 10px 10px}.row{grid-template-columns:auto 1fr}.row .right{grid-column:2;text-align:left}}
+
+[hidden]{display:none!important}
+.composer{border-radius:26px;align-items:flex-end}
+.composer textarea{flex:1;min-width:0;border:0;background:transparent;font:inherit;color:var(--text);padding:8px 12px;outline:none;resize:none;
+max-height:168px;line-height:1.45}
+.composer.listening{box-shadow:var(--shadow),0 0 0 2px rgba(255,59,48,.55)}
+.round.mic.on{background:var(--red);color:#fff;border-color:transparent;animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(255,59,48,.45)}50%{box-shadow:0 0 0 8px rgba(255,59,48,0)}}
+.listen-hint{font-size:12px;color:var(--red);text-align:center;margin:-2px 0 6px;min-height:0}
+.auth{position:fixed;inset:0;z-index:40;display:grid;place-items:center;padding:16px}
+.auth .card{width:min(400px,100%);padding:26px}.auth h1{margin:0 0 4px;font-size:24px}.auth p{margin:0 0 16px;color:var(--muted);font-size:14px}
+.field{display:block;margin:0 0 12px}.field span{display:block;font-size:12.5px;color:var(--muted);margin:0 0 4px;font-weight:600}
+.field input{width:100%;border:1px solid var(--edge);background:var(--glass);border-radius:12px;padding:10px 12px;font:inherit;color:var(--text);outline:none}
+.field input:focus{border-color:var(--blue)}
+.hint.ok{color:var(--green)}.wide{width:100%;justify-content:center;padding:10px 14px;font-size:14px}
+.or{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;margin:14px 0}.or:before,.or:after{content:"";flex:1;height:1px;background:var(--line)}
+.action{max-width:600px;border-radius:16px;padding:12px 14px;background:var(--glass-strong);border:1px solid var(--edge);animation:in .25s ease-out}
+.action .th{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted);flex-wrap:wrap}.action .th .ic{color:var(--orange)}
+.action .th b{color:var(--text);font-size:13px}.action .st{margin-left:auto;font-weight:600}
+.action.needs_approval{border-color:rgba(255,149,0,.55)}.action.done .th .ic,.action.done .st{color:var(--green)}
+.action.blocked,.action.failed{border-color:rgba(255,59,48,.5)}.action.blocked .st,.action.failed .st,.action.blocked .th .ic{color:var(--red)}
+.action.denied .st{color:var(--gray)}.action .body{font-size:13.5px;margin:8px 0 2px;white-space:pre-wrap;max-height:220px;overflow:auto}
+.action .why{margin-top:4px}
+.email{display:grid;gap:6px;margin-top:6px}.email input,.email textarea{width:100%;border:1px solid var(--edge);background:var(--glass);border-radius:10px;
+padding:8px 10px;font:inherit;font-size:13.5px;color:var(--text);outline:none}.email textarea{min-height:120px;resize:vertical}
+.seg{display:grid;gap:8px}.seg label{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:14px;border:1px solid var(--edge);
+background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue) inset}
+.seg label.off{opacity:.55;cursor:not-allowed}.seg input{margin-top:4px}.seg small{display:block;color:var(--muted);font-size:12px}
+.log li{font-size:12.5px}.log .pill{margin-left:auto;flex:none}
+</style></head><body>
+<div class="app" id="app" hidden><div class="chat" id="chat" aria-live="polite"></div>
+<div class="bottom"><div class="chips" id="chips"></div><div class="listen-hint" id="listen-hint"></div>
+<form class="composer glass" id="composer"><button type="button" class="round mic" id="mic" aria-label="Dictate" title="Dictate"></button>
+<textarea id="input" rows="1" autocomplete="off" placeholder="Message your agent" aria-label="Message"></textarea><button class="round send" aria-label="Send" id="send"></button></form></div></div>
+<button class="corner glass" id="open-settings" aria-label="Settings" hidden></button>
+<dialog class="glass sheet" id="settings"></dialog>
+<div class="auth" id="auth" hidden><form class="card glass" id="auth-form" autocomplete="off">
+<h1>Last Touch</h1><p>Your personal sourcing agent. It reads your Google account and shares who you're talking to with your team.</p>
+<label class="field"><span>Your name</span><input id="auth-name" placeholder="Alex Frankel" maxlength="60" required></label>
+<label class="field"><span>Username</span><input id="auth-user" placeholder="alex" maxlength="31" required autocapitalize="off" spellcheck="false"></label>
+<p class="hint" id="auth-hint">Pick a username. Teammates add you with it.</p>
+<button class="btn primary wide" id="auth-go" disabled>Continue</button>
+<div id="auth-google"></div></form></div>
+<script type="application/json" id="data">__DATA__</script>
+<script>
+(function () {
+  const D = JSON.parse(document.getElementById('data').textContent);
+  const $ = (s) => document.querySelector(s);
+  const esc = (t) => String(t == null ? '' : t).replace(/[&<>"']/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+  const ic = (n, s) => `<svg class="ic" width="${s || 16}" height="${s || 16}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${D.icons[n] || ''}</svg>`;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const chat = $('#chat'), chipsEl = $('#chips'), input = $('#input');
+  const GOOGLE = ['Gmail', 'Google Calendar', 'Google Chat'];
+  let ME = null;
+  $('#mic').innerHTML = ic('mic', 18); $('#send').innerHTML = ic('up', 18); $('#open-settings').innerHTML = ic('settings', 18);
+
+  // ---------------------------------------------------------------- server
+  class NeedsSignin extends Error {}
+  async function api(url, body, method) {
+    const opts = {method: method || (body === undefined ? 'GET' : 'POST'), headers: {}};
+    if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+    const r = await fetch(url, opts);
+    let j = {}; try { j = await r.json(); } catch (e) { j = {}; }
+    if (r.status === 401) { showAuth(); throw new NeedsSignin(); }
+    if (!r.ok) { const e = new Error(j.message || j.error || ('HTTP ' + r.status)); e.code = j.error; e.status = r.status; throw e; }
+    return j;
+  }
+
+  // ---------------------------------------------------------------- chat primitives
+  const initials = (n) => String(n).replace(/^@/, '').split(/[\s._-]+/).map((p) => p[0] || '').join('').slice(0, 2).toUpperCase();
+  const hue = (s) => `hsl(${[...String(s)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 360, 7)} 60% 50%)`;
+  const me = () => (ME ? `${ME.first}'s agent` : 'Your agent');
+  const scroll = () => { chat.scrollTop = chat.scrollHeight; };
+  function add(html) { chat.insertAdjacentHTML('beforeend', html); scroll(); return chat.lastElementChild; }
+  function agentAvatar(who) {
+    if (!who) return `<span class="avatar me-agent">${ic('spark', 16)}</span>`;
+    return `<span class="avatar" style="--hue:${hue(who.id)}">${esc(initials(who.name))}</span>`;
+  }
+  function say(html, who) {
+    const name = who ? `${who.name}'s agent` : me();
+    return add(`<div class="msg">${agentAvatar(who)}<div class="bubble"><b class="who">${esc(name)}</b><div>${html}</div></div></div>`);
+  }
+  const mine = (text) => add(`<div class="msg me"><div class="bubble" style="white-space:pre-wrap">${esc(text)}</div></div>`);
+  const sys = (text) => add(`<div class="msg sys"><span>${esc(text)}</span></div>`);
+  const block = (html) => add(`<div class="indent">${html}</div>`);
+  async function typing(ms) {
+    const el = add(`<div class="msg typing">${agentAvatar()}<div class="bubble"><i></i><i></i><i></i></div></div>`);
+    await sleep(ms || 400); el.remove();
+  }
+  async function tool(call, fn, opts) {
+    opts = opts || {};
+    const icon = opts.kind === 'mem' ? 'db' : opts.kind === 'agent' ? 'agent' : opts.kind || 'tool';
+    const head = esc(me()) + (opts.target ? ` &rarr; ${esc(opts.target)}` : '');
+    const el = block(`<div class="toolcard running"><div class="th">${ic(icon, 14)}<span class="tk">${opts.read === false ? 'Write' : 'Read'}</span><span>${head}</span><span class="st">running</span></div><code>${esc(call)}</code><div class="tr"></div></div>`);
+    const card = el.querySelector('.toolcard'), st = card.querySelector('.st');
+    try {
+      const res = await fn();
+      card.classList.remove('running'); st.textContent = 'done'; st.classList.add('ok');
+      card.querySelector('.tr').textContent = opts.result ? opts.result(res) : ''; scroll();
+      return res;
+    } catch (e) {
+      card.classList.remove('running'); st.textContent = 'failed'; st.style.color = 'var(--red)';
+      card.querySelector('.tr').textContent = e instanceof NeedsSignin ? 'signed out' : e.message; scroll();
+      throw e;
+    }
+  }
+  function setChips(list) {
+    chipsEl.innerHTML = list.map((c, i) => `<button type="button" class="chip ${c.cls || ''}" data-i="${i}">${c.icon ? ic(c.icon, 14) : ''}${esc(c.label)}</button>`).join('');
+    chipsEl.onclick = (ev) => { const b = ev.target.closest('.chip'); if (b && !busy) list[+b.dataset.i].act(b); };
+  }
+  let busy = false;
+  async function run(fn) {
+    if (busy) return; busy = true;
+    try { await fn(); } catch (e) {
+      if (e instanceof NeedsSignin) return;
+      if (e.code === 'google') connectGoogleMsg(e.message);
+      else if (e.code === 'interview') sys('Finish the interview first.');
+      else say(esc(e.message || 'Something went wrong. Try again.'));
+    } finally { busy = false; }
+  }
+  function connectGoogleMsg(text) {
+    if (!D.google) { say(`${esc(text || 'This needs Google.')} Google sign-in isn't set up on this server yet (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET).`); return; }
+    say(`${esc(text || 'Connect your Google account so I can read Gmail, Google Calendar and Google Chat.')}<div class="acts"><a class="btn primary" href="/auth/google">${ic('Gmail', 13)}Connect Google</a></div>`);
+  }
+
+  // ---------------------------------------------------------------- dictation (no time limit, fills the chat box live)
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null, listening = false, baseText = '', finalText = '', dictated = false;
+  const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 168) + 'px'; };
+  function micUI() {
+    $('#mic').classList.toggle('on', listening); $('#composer').classList.toggle('listening', listening);
+    $('#mic').innerHTML = ic(listening ? 'stop' : 'mic', 18);
+    $('#mic').setAttribute('aria-label', listening ? 'Stop dictation' : 'Dictate');
+    $('#listen-hint').textContent = listening ? 'Listening. Talk as long as you like, then tap stop or send.' : '';
+  }
+  function startDictation() {
+    if (!SR) { sys('Dictation needs Chrome, Edge or Safari.'); return; }
+    listening = true; dictated = true; finalText = '';
+    baseText = input.value.trim() ? input.value.replace(/\s*$/, ' ') : '';
+    rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || 'en-US';
+    rec.onresult = (e) => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) { const sofar = baseText + finalText; finalText += r[0].transcript.trim().replace(/^/, sofar && !/\s$/.test(sofar) ? ' ' : ''); }
+        else interim += r[0].transcript;
+      }
+      input.value = (baseText + finalText + (interim ? ' ' + interim.trim() : '')).replace(/^\s+/, '');
+      grow(); input.scrollTop = input.scrollHeight;
+    };
+    rec.onerror = (e) => {
+      if (['not-allowed', 'service-not-allowed', 'audio-capture'].includes(e.error)) {
+        stopDictation(); sys(e.error === 'audio-capture' ? 'No microphone found.' : 'Microphone access is blocked. Allow it in your browser to dictate.');
+      }
+    };
+    // Browsers end recognition after a pause; keep restarting until the user stops, so there is no time limit.
+    rec.onend = () => {
+      if (!listening) return;
+      baseText = (baseText + finalText).replace(/\s*$/, ' '); finalText = '';
+      try { rec.start(); } catch (e) { setTimeout(() => { if (listening) try { rec.start(); } catch (x) { stopDictation(); } }, 250); }
+    };
+    try { rec.start(); } catch (e) { listening = false; }
+    micUI(); input.focus();
+  }
+  function stopDictation() {
+    listening = false;
+    if (rec) { try { rec.stop(); } catch (e) {} rec = null; }
+    micUI();
+  }
+  $('#mic').onclick = () => (listening ? stopDictation() : startDictation());
+  input.addEventListener('input', () => { grow(); if (listening) { baseText = input.value.replace(/\s*$/, ' '); finalText = ''; } });
+  input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $('#composer').requestSubmit(); } });
+
+  // ---------------------------------------------------------------- actions (writes): Ask mode asks, Auto mode asks PRISM
+  const ST = {needs_approval: 'Needs your OK', done: 'Done', blocked: 'Blocked', denied: 'Not done', failed: 'Failed'};
+  function actionHTML(a) {
+    const p = a.payload || {};
+    let body = '';
+    if (a.type === 'send_email') body = `To: ${esc(p.to.join(', '))}\nSubject: ${esc(p.subject)}\n\n${esc(p.body)}`;
+    else if (a.type === 'save_note') body = esc(p.text);
+    else body = esc((p.items || []).slice(0, 8).map((i) => i.company || i.name || i.email).join(', ') + ((p.items || []).length > 8 ? ', …' : ''));
+    const rv = a.review ? `<div class="why">PRISM review: ${esc(a.review.decision)}${a.review.reason ? ` (${esc(a.review.reason)})` : ''}</div>` : '';
+    const reason = a.reason ? `<div class="why">${esc(a.reason)}</div>` : '';
+    const done = a.result && a.result.text ? `<div class="why">${esc(a.result.text)}</div>` : '';
+    const btns = a.status === 'needs_approval' ? `<div class="acts"><button class="btn primary" data-approve="${esc(a.id)}">${ic('check', 13)}Approve</button><button class="btn" data-deny="${esc(a.id)}">Don't</button></div>` : '';
+    return `<div class="action ${esc(a.status)}" data-aid="${esc(a.id)}"><div class="th">${ic('shield', 14)}<b>${esc(a.summary)}</b>
+      <span class="st">${esc(ST[a.status] || a.status)}</span></div><div class="small">${a.mode === 'auto' ? 'Auto mode · checked by PRISM' : 'Ask mode · waiting for you'}</div>
+      <div class="body">${body}</div>${rv}${reason}${done}${btns}</div>`;
+  }
+  async function propose(type, payload) {
+    const a = await api('/api/actions', {type, payload});
+    block(actionHTML(a));
+    return a;
+  }
+  chat.addEventListener('click', async (ev) => {
+    const ok = ev.target.closest('[data-approve]'), no = ev.target.closest('[data-deny]');
+    if (!ok && !no) return;
+    const id = (ok || no).dataset.approve || (ok || no).dataset.deny;
+    const card = chat.querySelector(`[data-aid="${CSS.escape(id)}"]`);
+    card.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    try { const a = await api(`/api/actions/${id}`, {approve: !!ok}); card.outerHTML = actionHTML(a); }
+    catch (e) { if (!(e instanceof NeedsSignin)) say(esc(e.message)); }
+  });
+
+  // ---------------------------------------------------------------- interview
+  const Q = D.interview;
+  let step = -1, answers = {};
+  async function startInterview() {
+    answers = {}; step = -1;
+    sys('Build your personal agent');
+    await next();
+  }
+  async function next() {
+    step += 1;
+    const q = Q[step];
+    await typing(350);
+    say(esc(q.q.replace('{name}', ME.first)));
+    input.placeholder = 'Type or dictate an answer, or pick one';
+    setChips(q.chips.map((c) => ({label: c, act: () => run(() => answer(c))})));
+  }
+  async function answer(text) {
+    mine(text); setChips([]);
+    answers[Q[step].key] = text;
+    if (step < Q.length - 1) return next();
+    input.placeholder = 'Message your agent';
+    const r = await tool(`learn_thesis("${answers.focus || ''}")`, () => api('/api/profile', answers), {kind: 'db', read: false, result: (r) => r.user.profile.weights_text});
+    ME = r.user; step = -1;
+    profileCard();
+    await typing(300);
+    say(`I'm ready, ${esc(ME.first)}. I source with your criteria and check with your teammates' agents so nobody drops a founder. Anything you type or dictate that isn't a request, I save as a note.`);
+    if (!ME.google.connected) connectGoogleMsg();
+    mainChips();
+  }
+  function profileCard() {
+    const p = ME.profile;
+    const bars = Object.entries(p.weights).filter(([, v]) => v).sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `<div class="bar"><span>${esc(k.replace('_', ' '))}</span><span class="t"><i style="width:${v * 2.5}%"></i></span><span>${v}%</span></div>`).join('');
+    block(`<div class="card profile"><div class="head">${agentAvatar()}<div><b>${esc(ME.first)}'s agent</b><span class="small">@${esc(ME.username)} · built from your interview</span></div></div>
+      <dl class="kv"><dt>Role</dt><dd>${esc(p.role)}</dd><dt>Focus</dt><dd>${esc(p.sectors.join(', '))} · ${esc(p.stages.join(', '))}</dd>
+      <dt>Trusts</dt><dd>${esc(p.signal || 'A balanced read')}</dd><dt>Filters out</dt><dd>${esc(p.nos)}</dd>
+      <dt>Writes</dt><dd>${ME.mode === 'auto' ? 'Auto: PRISM approves or blocks' : 'Asks you first'}</dd></dl><div class="bars">${bars}</div></div>`);
+  }
+  function mainChips() {
+    setChips([
+      {label: 'Source founders', icon: 'spark', act: () => run(() => ask('Source founders for me'))},
+      {label: 'Who have I been talking to?', icon: 'Gmail', act: () => run(() => ask('Who have I been talking to?'))},
+      {label: 'What is my team working on?', icon: 'agent', act: () => run(() => ask('What is my team working on?'))},
+    ]);
+  }
+
+  // ---------------------------------------------------------------- skills
+  let LEADS = [];
+  async function ask(text, source) {
+    mine(text);
+    const q = text.toLowerCase().trim();
+    let m;
+    if ((m = q.match(/^(?:ask (?:the |my )?team (?:about )?|who knows )(.+?)\??$/))) return askTeam(m[1]);
+    if (/^(source|find)\b|new founders|my pipeline|scan (my )?inbox/.test(q)) return sourcing();
+    if (/who (have|am) i (been )?talk|my conversations|who do i owe|follow[- ]?ups?\??$/.test(q)) return contacts();
+    if (/what is my team|team working|what's my team|my team doing/.test(q)) return team();
+    if (/^(help|what can you do)\??$/.test(q)) {
+      return say('I can source founders from your Gmail, show who you have been talking to across Gmail, Google Calendar and Google Chat, and check what your team is working on. Ask "who knows Acme?" to check with your teammates\' agents. Anything else you type or dictate, I save as a note.');
+    }
+    return note(text, source);
+  }
+  async function note(text, source) {
+    const check = await tool('check_firm_memory(note)', () => api('/api/notes/check', {text}), {kind: 'agent', target: 'team agents',
+      result: (r) => (r.hits.length ? `${r.hits.length} teammate match${r.hits.length > 1 ? 'es' : ''}` : 'no teammate has this yet')});
+    for (const h of check.hits) say(esc(h.text), {id: h.username, name: h.who});
+    await propose('save_note', {text, source});
+  }
+  async function sourcing() {
+    const r = await tool('gmail.scan_inbox(primary, last 30 days)', () => api('/api/source'), {kind: 'Gmail',
+      result: (r) => `${r.scanned} emails read · ${r.leads.length} founders kept · ${r.dropped.length} dropped · extracted with ${r.extractor}`});
+    LEADS = r.leads;
+    if (!r.leads.length) {
+      say(`I read ${r.scanned} recent emails in your primary inbox and found no founder pitches.${r.dropped.length ? ` I dropped ${r.dropped.length}: ${esc(r.dropped.slice(0, 4).map((d) => `${d.from} (${d.reason.toLowerCase()})`).join(', '))}.` : ''}`);
+      return;
+    }
+    const top = r.leads.filter((l) => l.verdict !== 'Outside your thesis' && l.verdict !== 'Pass').slice(0, 6);
+    const show = top.length ? top : r.leads.slice(0, 4);
+    say(`${top.length ? `Here is who is worth your time, ranked by your own criteria.` : `Nobody clears your bar right now. Closest ones:`} ${r.leads.length - show.length ? `${r.leads.length - show.length} more are below your bar or outside your thesis.` : ''}${r.dropped.length ? ` Dropped ${r.dropped.length} non-founder emails.` : ''}`);
+    block(`<div class="cards">${show.map(leadCard).join('')}</div>`);
+    for (const l of show.filter((l) => l.known.length).slice(0, 3)) for (const h of l.known) say(esc(h.text), {id: h.username, name: h.who});
+    await propose('share_pipeline', {items: r.leads.map((l) => ({company: l.company, founder: l.founder, email: l.email, score: l.score, verdict: l.verdict, sector: l.sector, stage: l.stage, subject: l.subject, when: l.when}))});
+  }
+  function leadCard(l) {
+    const v = l.verdict === 'Take the first call' ? 'v-take' : l.verdict === 'Keep warm' ? 'v-warm' : '';
+    return `<div class="card lead"><div class="top"><div><h4>${esc(l.company || l.founder)}</h4><small>${esc(l.founder)} · ${esc(l.email)} · ${esc(l.when)}</small></div>
+      <div class="ring" style="--p:${l.score}" title="Score on your thesis">${l.score}</div></div><p>${esc(l.one_liner)}</p>
+      <div class="meta"><span class="pill ${v}">${esc(l.verdict)}</span><span class="pill">${esc(l.sector)} · ${esc(l.stage)}</span>${l.known.length ? `<span class="pill s-scheduled">Known to ${esc(l.known[0].who)}</span>` : ''}</div>
+      <div class="why">Why: ${esc(l.why)}${l.traction !== 'Not stated' ? ` · ${esc(l.traction)}` : ''}${l.raise ? ` · raising ${esc(l.raise)}` : ''}</div>
+      <div class="acts"><button class="btn primary" data-draft="${esc(l.id)}">${ic('send', 13)}Draft reply</button><button class="btn" data-team="${esc(l.id)}">${ic('agent', 13)}Ask the team</button></div></div>`;
+  }
+  chat.addEventListener('click', (ev) => {
+    const d = ev.target.closest('[data-draft]'), t = ev.target.closest('[data-team]'), s = ev.target.closest('[data-send]');
+    if (busy) return;
+    if (d) { const l = LEADS.find((x) => x.id === d.dataset.draft); if (l) run(() => draft(l)); }
+    if (t) { const l = LEADS.find((x) => x.id === t.dataset.team); if (l) run(() => ask(`Ask the team about ${l.company || l.founder}`)); }
+    if (s) {
+      const f = s.closest('.email');
+      run(async () => {
+        s.disabled = true;
+        await propose('send_email', {to: f.querySelector('[name=to]').value.split(',').map((x) => x.trim()).filter(Boolean),
+          subject: f.querySelector('[name=subject]').value, body: f.querySelector('[name=body]').value, thread: f.dataset.thread || null});
+      });
+    }
+  });
+  async function draft(l) {
+    say(`Here is a reply to ${esc(l.founder)}. Edit it, then send. ${ME.mode === 'auto' ? 'PRISM checks it before it goes out.' : 'I ask you once more before it goes out.'}
+      <div class="email" data-thread="${esc(l.thread || '')}"><input name="to" value="${esc(l.email)}" aria-label="To"><input name="subject" value="${esc(/^re:/i.test(l.subject) ? l.subject : 'Re: ' + l.subject)}" aria-label="Subject">
+      <textarea name="body" aria-label="Email">${esc(l.draft)}</textarea><div class="acts"><button class="btn primary" data-send>${ic('send', 13)}Send with Gmail</button></div></div>`);
+  }
+  async function askTeam(q) {
+    const r = await tool(`who_knows("${q}")`, () => api('/api/team/search?q=' + encodeURIComponent(q)), {kind: 'agent', target: 'team agents',
+      result: (r) => `${r.hits.length} repl${r.hits.length === 1 ? 'y' : 'ies'}`});
+    if (!ME.team.length) { say('You have no teammates yet. Add people by username in Settings.'); return; }
+    if (!r.hits.length) { say(`Nobody on your team has ${esc(q)} in their notes, pipeline or conversations. It's yours.`); return; }
+    for (const h of r.hits) say(esc(h.text), {id: h.username, name: h.who});
+  }
+  async function contacts() {
+    const r = await tool(`sync(${GOOGLE.join(', ')})`, () => api('/api/conversations'), {kind: 'Gmail',
+      result: (r) => `${r.people.length} people · ${r.chat.length} chats${Object.keys(r.errors).length ? ` · ${Object.keys(r.errors).join(', ')} failed` : ''}`});
+    for (const [k, v] of Object.entries(r.errors)) say(`${esc(k)} didn't load: ${esc(v)}`);
+    if (!r.people.length && !r.chat.length) { say('I found no recent conversations with people in your Gmail, Google Calendar or Google Chat.'); return; }
+    if (r.people.length) {
+      say(`You have ${r.people.length} active conversations. Here is who, where, and what's next:`);
+      block(`<div class="card rows">${r.people.map((c) => `<div class="row"><span class="src" title="${esc(c.channels.join(', '))}">${ic(c.channels[0], 16)}</span>
+        <div><b>${esc(c.name)}</b> · ${esc(c.email)}<small>${esc(c.summary)}</small><small>Next: ${esc(c.next)}</small></div>
+        <div class="right"><span class="pill s-${esc(c.status)}">${esc(c.due)}</span><br>${esc(c.channels.join(', '))} · ${esc(c.when)}</div></div>`).join('')}</div>`);
+    }
+    if (r.chat.length) {
+      say('Latest in Google Chat:');
+      block(`<div class="card rows">${r.chat.map((c) => `<div class="row"><span class="src">${ic('Google Chat', 16)}</span>
+        <div><b>${esc(c.space)}</b>${c.sender ? ` · ${esc(c.sender)}` : ''}<small>${esc(c.text || '(attachment)')}</small></div><div class="right">${esc((c.when || '').slice(0, 10))}</div></div>`).join('')}</div>`);
+    }
+    const urgent = r.people.filter((c) => c.status === 'overdue' || c.status === 'due');
+    if (urgent.length) say(`${urgent.length} need you now: ${urgent.slice(0, 5).map((c) => `${esc(c.name)} (${esc(c.due.toLowerCase())})`).join(', ')}.`);
+    if (r.people.length) await propose('share_contacts', {items: r.people.map((c) => ({name: c.name, email: c.email, last_touch: c.last_touch, channels: c.channels, status: c.status}))});
+  }
+  async function team() {
+    if (!ME.team.length) { say('You have no teammates yet. Open Settings and add people by their username.'); return; }
+    const r = await tool('list_relationships()', () => api('/api/team/activity'), {kind: 'agent', target: 'team agents',
+      result: (r) => `${r.team.length} agent${r.team.length === 1 ? '' : 's'} replied`});
+    for (const m of r.team) {
+      const bits = [];
+      if (m.pipeline.length) bits.push(`In my pipeline: ${m.pipeline.map((p) => `${esc(p.company || p.founder)} (${p.score})`).join(', ')}.`);
+      if (m.due.length) bits.push(`Owes a reply to ${m.due.map((c) => esc(c.name)).join(', ')}.`);
+      if (m.notes.length) bits.push(`Latest note: "${esc(m.notes[0].text.slice(0, 180))}"`);
+      bits.push(`Talking to ${m.contacts} people${m.focus ? `. Focus: ${esc(m.focus)}` : ''}.`);
+      say(bits.join('<br>'), {id: m.username, name: m.name.split(' ')[0]});
+    }
+    if (r.pending.length) sys(`Waiting for ${r.pending.map((u) => '@' + u).join(', ')} to add you back before their agents share with you.`);
+  }
+
+  // ---------------------------------------------------------------- settings
+  async function renderSettings() {
+    const dlg = $('#settings'), p = ME.profile;
+    let teamRows = '<li class="small">Loading…</li>', log = '';
+    dlg.innerHTML = '';
+    const draw = () => {
+      dlg.innerHTML = `<div class="sheet-head"><h2>Settings</h2><button class="round mic" id="close-settings" aria-label="Close">${ic('x', 16)}</button></div>
+      <h3>Account</h3><ul class="list"><li>${agentAvatar({id: ME.username, name: ME.name})}<span><b>${esc(ME.name)}</b><small>@${esc(ME.username)}</small></span><button class="rm end" id="signout">Sign out</button></li></ul>
+      <h3>Your agent</h3>${p ? `<ul class="list"><li>${agentAvatar()}<span><b>${esc(ME.first)}'s agent</b><small>${esc(p.sectors.join(', '))} · ${esc(p.stages.join(', '))}</small></span></li></ul>
+        <button class="btn" id="redo">Redo the interview</button>` : '<p class="small">Finish the interview in the chat to build your agent.</p>'}
+      <h3>When the agent writes</h3><div class="seg">
+        <label class="${ME.mode === 'ask' ? 'on' : ''}"><input type="radio" name="mode" value="ask" ${ME.mode === 'ask' ? 'checked' : ''}><span><b>Ask for permission</b><small>Every write (sending an email, saving to firm memory) waits for your OK. PRISM is not used.</small></span></label>
+        <label class="${ME.mode === 'auto' ? 'on' : ''} ${D.prism ? '' : 'off'}"><input type="radio" name="mode" value="auto" ${ME.mode === 'auto' ? 'checked' : ''} ${D.prism ? '' : 'disabled'}><span><b>Auto, guarded by PRISM</b><small>${D.prism ? 'PRISM reviews each write and allows or blocks it. If PRISM is unsure, I ask you.' : 'Needs PRISMTRACE_API_KEY and PRISMTRACE_PROJECT_ID on the server.'}</small></span></label>
+      </div><p class="hint">Reading is always allowed. Hard limits apply in both modes: at most 3 recipients and 25 emails a day, and no secrets in what I write.</p>
+      <h3>Google</h3>${!D.google ? '<p class="small">Google sign-in is not set up on this server (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET).</p>'
+        : ME.google.connected ? `<ul class="list">${GOOGLE.map((s) => `<li><span class="src">${ic(s, 16)}</span><span>${esc(s)}<small>Connected as ${esc(ME.google.email)}</small></span></li>`).join('')}</ul>
+          <button class="btn" id="g-off">Disconnect Google</button>`
+        : `<p class="small">Connect once to give your agent Gmail, Google Calendar and Google Chat.</p><a class="btn primary" href="/auth/google">${ic('Gmail', 14)}Connect Google</a>`}
+      <h3>Team</h3><ul class="list" id="team-list">${teamRows}</ul>
+      <h3>Add a person</h3><form class="add" id="add-person"><input id="username" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Username, e.g. dana" aria-label="Username"><button class="btn primary" id="add-btn">${ic('userplus', 14)}Add</button></form>
+      <p class="hint" id="add-hint">Type their username. Their agent shares with yours once they add you back.</p>
+      <h3>Recent agent actions</h3><ul class="list log">${log || '<li class="small">None yet.</li>'}</ul>
+      <p class="hint">Firm memory: ${esc(D.store)}.</p>`;
+      wire();
+    };
+    const wire = () => {
+      $('#close-settings').onclick = () => dlg.close();
+      $('#signout').onclick = async () => { await api('/api/signout', {}); location.href = '/'; };
+      const redo = $('#redo'); if (redo) redo.onclick = () => { dlg.close(); run(startInterview); };
+      dlg.querySelectorAll('input[name=mode]').forEach((r) => { r.onchange = async () => {
+        try { ME = (await api('/api/settings', {mode: r.value})).user; sys(ME.mode === 'auto' ? 'Auto mode: PRISM reviews every write.' : 'Ask mode: I ask before every write.'); }
+        catch (e) { if (!(e instanceof NeedsSignin)) sys(e.message); }
+        draw();
+      }; });
+      const goff = $('#g-off'); if (goff) goff.onclick = async () => { ME = (await api('/api/google/disconnect', {})).user; sys('Google disconnected.'); draw(); };
+      dlg.querySelectorAll('[data-rm]').forEach((b) => { b.onclick = async () => {
+        ME = (await api('/api/team/' + encodeURIComponent(b.dataset.rm), undefined, 'DELETE')).user; sys(`@${b.dataset.rm} was removed from your team`); loadTeam();
+      }; });
+      const uIn = $('#username'), hint = $('#add-hint');
+      let t = null;
+      uIn.oninput = () => {
+        clearTimeout(t);
+        const u = uIn.value.trim().replace(/^@/, '').toLowerCase();
+        if (!u) { hint.textContent = 'Type their username.'; hint.className = 'hint'; return; }
+        t = setTimeout(async () => {
+          const r = await api('/api/username/' + encodeURIComponent(u));
+          if (uIn.value.trim().replace(/^@/, '').toLowerCase() !== u) return;
+          if (!r.valid) { hint.textContent = r.message; hint.className = 'hint err'; }
+          else if (r.exists) { hint.textContent = u === ME.username ? "That's you." : `@${u} exists.`; hint.className = u === ME.username ? 'hint err' : 'hint ok'; }
+          else { hint.textContent = `No one is called @${u}.`; hint.className = 'hint err'; }
+        }, 250);
+      };
+      $('#add-person').onsubmit = async (ev) => {
+        ev.preventDefault();
+        const u = uIn.value.trim().replace(/^@/, '').toLowerCase();
+        try {
+          const r = await api('/api/team', {username: u});
+          ME = r.user; uIn.value = '';
+          hint.textContent = r.mate.mutual ? `@${u} is on your team and shares with you.` : `Added @${u}. Their agent shares with yours once they add you back.`; hint.className = 'hint ok';
+          sys(`@${u} added to your team`); loadTeam();
+        } catch (e) { if (!(e instanceof NeedsSignin)) { hint.textContent = e.message; hint.className = 'hint err'; } }
+      };
+    };
+    const loadTeam = async () => {
+      const r = await api('/api/team');
+      teamRows = r.team.length ? r.team.map((m) => `<li>${agentAvatar({id: m.username, name: m.name})}<span><b>${esc(m.name)}</b><small>@${esc(m.username)} · ${m.mutual ? (m.ready ? 'agent ready, sharing with you' : 'interview pending') : `waiting for @${esc(m.username)} to add you back`}</small></span><button class="rm end" data-rm="${esc(m.username)}">Remove</button></li>`).join('')
+        : '<li class="small">No teammates yet.</li>';
+      const el = $('#team-list'); if (el) { el.innerHTML = teamRows; el.querySelectorAll('[data-rm]').forEach((b) => { b.onclick = async () => { ME = (await api('/api/team/' + encodeURIComponent(b.dataset.rm), undefined, 'DELETE')).user; sys(`@${b.dataset.rm} was removed from your team`); loadTeam(); }; }); }
+    };
+    draw();
+    try {
+      const [, acts] = await Promise.all([loadTeam(), api('/api/actions')]);
+      log = acts.actions.map((a) => `<li><span>${esc(a.summary)}<small>${esc((a.created_at || '').slice(0, 16).replace('T', ' '))} · ${a.mode === 'auto' ? 'auto (PRISM)' : 'ask'}${a.reason ? ' · ' + esc(a.reason) : ''}</small></span><span class="pill s-${a.status === 'done' ? 'scheduled' : a.status === 'blocked' || a.status === 'failed' ? 'overdue' : a.status === 'needs_approval' ? 'due' : 'pass'}">${esc(ST[a.status] || a.status)}</span></li>`).join('');
+      const keep = $('#username') ? $('#username').value : '';
+      draw(); if (keep) $('#username').value = keep;
+    } catch (e) { /* settings still usable */ }
+  }
+  $('#open-settings').onclick = () => { $('#settings').showModal(); renderSettings(); };
+
+  // ---------------------------------------------------------------- composer
+  $('#composer').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const wasDictated = dictated;
+    stopDictation(); dictated = false;
+    const text = input.value.trim(); if (!text || busy) return;
+    input.value = ''; grow();
+    if (step >= 0) run(() => answer(text)); else run(() => ask(text, wasDictated ? 'dictation' : 'typed'));
+  });
+
+  // ---------------------------------------------------------------- sign in
+  function showAuth() {
+    $('#app').hidden = true; $('#open-settings').hidden = true; $('#auth').hidden = false;
+    $('#auth-google').innerHTML = D.google ? `<div class="or">or</div><a class="btn wide" href="/auth/google?mode=login">${ic('Gmail', 14)}Sign in with Google</a>` : '';
+    $('#auth-name').focus();
+  }
+  let check = null;
+  const authUser = $('#auth-user'), authHint = $('#auth-hint'), authGo = $('#auth-go');
+  let authState = null;
+  authUser.oninput = () => {
+    clearTimeout(check); authState = null; authGo.disabled = true;
+    const u = authUser.value.trim().replace(/^@/, '').toLowerCase();
+    if (!u) { authHint.textContent = 'Pick a username. Teammates add you with it.'; authHint.className = 'hint'; authGo.textContent = 'Continue'; return; }
+    authHint.textContent = 'Checking…'; authHint.className = 'hint';
+    check = setTimeout(async () => {
+      const r = await api('/api/username/' + encodeURIComponent(u));
+      if (authUser.value.trim().replace(/^@/, '').toLowerCase() !== u) return;
+      authState = r;
+      if (!r.valid) { authHint.textContent = r.message; authHint.className = 'hint err'; authGo.textContent = 'Continue'; return; }
+      authGo.disabled = false;
+      if (r.available) { authHint.textContent = `@${u} is available.`; authHint.className = 'hint ok'; authGo.textContent = 'Create account'; }
+      else { authHint.textContent = r.google ? `@${u} exists and is linked to Google. You'll confirm with Google.` : `@${u} exists. Enter the name on that account to sign in.`; authHint.className = 'hint'; authGo.textContent = r.google ? 'Sign in with Google' : 'Sign in'; }
+    }, 250);
+  };
+  $('#auth-form').onsubmit = async (ev) => {
+    ev.preventDefault();
+    if (!authState || !authState.valid) return;
+    const body = {name: $('#auth-name').value.trim(), username: authUser.value.trim()};
+    authGo.disabled = true;
+    try {
+      const r = await api(authState.available ? '/api/signup' : '/api/signin', body);
+      if (r.redirect) { location.href = r.redirect; return; }
+      ME = r.user; start();
+    } catch (e) { authHint.textContent = e.message; authHint.className = 'hint err'; authGo.disabled = false; }
+  };
+
+  // ---------------------------------------------------------------- start
+  const GERR = {not_configured: 'Google sign-in is not set up on this server.', state: 'Google sign-in expired. Try again.', exchange: "Google didn't finish signing you in. Try again.",
+    nomatch: "That Google account isn't the one linked to this username.", noaccount: 'No account is linked to that Google account yet. Create one with your name and a username, then connect Google in Settings.',
+    linked: 'That Google account is already linked to another username.', offline: 'Google did not grant offline access. Disconnect the app in your Google account settings and connect again.',
+    access_denied: 'You cancelled Google access.', email: 'Google did not share a verified email.'};
+  function start() {
+    $('#auth').hidden = true; $('#app').hidden = false; $('#open-settings').hidden = false;
+    chat.innerHTML = '';
+    const qs = new URLSearchParams(location.search);
+    if (qs.get('google') === 'connected') sys(`Google connected as ${ME.google.email}`);
+    if (qs.get('google_error')) sys(GERR[qs.get('google_error')] || 'Google sign-in failed.');
+    if (location.search) history.replaceState(null, '', '/');
+    if (!ME.profile) { run(startInterview); return; }
+    sys(`${ME.first}'s agent · @${ME.username}`);
+    profileCard();
+    say(`Welcome back, ${esc(ME.first)}. What should we work on? You can also type or dictate a note.`);
+    if (!ME.google.connected) connectGoogleMsg();
+    mainChips();
+  }
+  (async () => {
+    try {
+      const r = await api('/api/me');
+      if (r.user) { ME = r.user; start(); } else {
+        showAuth();
+        const e = new URLSearchParams(location.search).get('google_error');
+        if (e) { authHint.textContent = GERR[e] || 'Google sign-in failed.'; authHint.className = 'hint err'; history.replaceState(null, '', '/'); }
+      }
+    } catch (e) { if (!(e instanceof NeedsSignin)) showAuth(); }
+  })();
+})();
+</script>
+</body></html>
