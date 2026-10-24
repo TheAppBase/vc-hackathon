@@ -557,6 +557,7 @@ dialog::backdrop{background:rgba(10,20,22,.25);-webkit-backdrop-filter:blur(4px)
     if (!q.chips.length) input.focus();
   }
   async function answer(text, voice) {
+    dropDraft();
     const q = Q[step];
     mine(text, voice); setChips([]);
     if (q.multi) {
@@ -625,6 +626,7 @@ dialog::backdrop{background:rgba(10,20,22,.25);-webkit-backdrop-filter:blur(4px)
   const isNote = (t) => /^note\s*[:,-]/i.test(t) || (!/\?\s*$/.test(t)
     && !/^(?:who|what|when|where|why|how|which|did|do|does|have|has|can|could|should|would|is|are|tell|show|find|source|ask|draft)\b/i.test(t) && NOTE_VERB.test(t));
   async function ask(text, voice) {
+    dropDraft();
     mine(text, voice);
     const q = text.toLowerCase();
     const p = pending; pending = null; mainChips();
@@ -831,10 +833,35 @@ dialog::backdrop{background:rgba(10,20,22,.25);-webkit-backdrop-filter:blur(4px)
 
   // ---------------------------------------------------------------- composer and voice input
   // Dictation fills the message box live and has no time limit: browsers end recognition after a pause, so it restarts
-  // until you tap the mic again or send. Works for any message, including the interview.
+  // until you tap the mic again or send. Works for any message, including the interview. Typing takes over the box.
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let rec = null, listening = false, baseText = '', finalText = '', dictated = false;
+  let rec = null, listening = false, baseText = '', carry = '', dictated = false;
   const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 168) + 'px'; };
+  // Browsers report speech differently: Chrome sends each phrase once, Android Chrome repeats everything heard so far in
+  // every result, Safari can re-send a phrase. So rebuild the session's text from all results each time, without repeats.
+  const toks = (t) => String(t || '').trim().split(/\s+/).filter(Boolean);
+  const same = (w1, w2) => w1.toLowerCase().replace(/[^\p{L}\p{N}']/gu, '') === w2.toLowerCase().replace(/[^\p{L}\p{N}']/gu, '');
+  const startsWith = (a, b) => b.length <= a.length && b.every((w, i) => same(w, a[i]));
+  function merge(a, b) {
+    const A = toks(a), B = toks(b);
+    if (!B.length) return A.join(' ');
+    if (!A.length) return B.join(' ');
+    if (startsWith(B, A)) return B.join(' ');                                            // b repeats a and adds to it
+    if (startsWith(A.slice(Math.max(0, A.length - B.length)), B)) return A.join(' ');    // b repeats the end of a
+    return A.concat(B).join(' ');
+  }
+  function heard(results) {
+    // Returns [the session's text, its trailing words not yet marked final].
+    let fin = '', mid = '';
+    for (let i = 0; i < results.length; i++) {
+      const t = results[i] && results[i][0] ? results[i][0].transcript : '';
+      if (results[i].isFinal) { fin = merge(fin, t); mid = ''; } else mid = merge(mid, t);  // a final replaces earlier interims
+    }
+    let text = merge(fin, mid);
+    // After a restart, Safari may re-send words that were shown but never marked final; they are already in the box.
+    if (carry && startsWith(toks(text), toks(carry))) text = toks(text).slice(toks(carry).length).join(' ');
+    return [text, mid];
+  }
   function micUI() {
     $('#mic').classList.toggle('on', listening); $('#composer').classList.toggle('listening', listening);
     $('#mic').innerHTML = ic(listening ? 'stop' : 'mic', 18);
@@ -844,20 +871,17 @@ dialog::backdrop{background:rgba(10,20,22,.25);-webkit-backdrop-filter:blur(4px)
   function startDictation() {
     if (!SR) { sys('Voice input needs Chrome, Edge or Safari. You can type instead.'); input.focus(); return; }
     if (rec) discardDictation();
-    listening = true; dictated = true; finalText = '';
+    listening = true; dictated = true; carry = '';
     baseText = input.value.trim() ? input.value.replace(/\s*$/, ' ') : '';
     // Each session writes to the box only while it is the current one, so words that arrive after a send never come back.
     const me = new SR(); rec = me;
+    let pending = '';
     me.continuous = true; me.interimResults = true; me.lang = navigator.language || 'en-US';
     me.onresult = (e) => {
       if (rec !== me) return;
-      let interim = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i];
-        if (r.isFinal) { const sofar = baseText + finalText; finalText += (sofar && !/\s$/.test(sofar) ? ' ' : '') + r[0].transcript.trim(); }
-        else interim += r[0].transcript;
-      }
-      input.value = (baseText + finalText + (interim ? ' ' + interim.trim() : '')).replace(/^\s+/, '');
+      const [text, mid] = heard(e.results);
+      pending = mid;
+      input.value = (baseText + text).replace(/^\s+/, '');
       grow(); input.scrollTop = input.scrollHeight;
     };
     me.onerror = (e) => {
@@ -870,7 +894,9 @@ dialog::backdrop{background:rgba(10,20,22,.25);-webkit-backdrop-filter:blur(4px)
     me.onend = () => {
       if (rec !== me) return;
       if (!listening) { rec = null; return; }  // stopped with the mic: the last words have landed, the session is over
-      baseText = (baseText + finalText).replace(/\s*$/, ' '); finalText = '';
+      // The browser ended a phrase: keep everything on screen (Safari may never mark the last words final) and listen again.
+      carry = pending; pending = '';
+      baseText = input.value.trim() ? input.value.replace(/\s*$/, ' ') : '';
       try { me.start(); } catch (e) { setTimeout(() => { if (listening && rec === me) try { me.start(); } catch (x) { stopDictation(); } }, 250); }
     };
     try { me.start(); } catch (e) { listening = false; rec = null; }
@@ -883,21 +909,26 @@ dialog::backdrop{background:rgba(10,20,22,.25);-webkit-backdrop-filter:blur(4px)
     micUI();
   }
   function discardDictation() {
-    // Sending: end the session now and drop anything still in flight, so it can't refill the box or join the next message.
+    // End the session now and drop anything still in flight, so it can't refill the box or join the next message.
     listening = false;
-    const r = rec; rec = null; baseText = ''; finalText = '';
+    const r = rec; rec = null; baseText = ''; carry = '';
     if (r) { r.onresult = r.onerror = r.onend = null; try { r.abort(); } catch (e) { try { r.stop(); } catch (x) {} } }
     micUI();
   }
+  function dropDraft() {
+    // A chip or card sends its own message: an unsent dictated draft must not stay in the box and join the next one.
+    if (dictated) { discardDictation(); dictated = false; input.value = ''; grow(); }
+  }
   $('#mic').onclick = () => (listening ? stopDictation() : startDictation());
-  input.addEventListener('input', () => { grow(); if (listening) { baseText = input.value.replace(/\s*$/, ' '); finalText = ''; } });
+  // Typing takes over the box: dictation stops (tap the mic to keep talking), so speech can never overwrite or repeat an edit.
+  input.addEventListener('input', () => { grow(); if (rec) discardDictation(); });
   input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $('#composer').requestSubmit(); } });
   $('#composer').addEventListener('submit', (ev) => {
     ev.preventDefault();
     if (busy) return;
+    const text = input.value.trim(); if (!text) return;   // an empty send keeps listening
     const voice = dictated;
     discardDictation(); dictated = false;
-    const text = input.value.trim(); if (!text) return;
     input.value = ''; grow();
     if (S.profile) run(() => ask(text, voice));
     else if (step >= Q.length - 1 && S.answers[Q[Q.length - 1].key] != null) run(build);
