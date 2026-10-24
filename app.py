@@ -1,9 +1,9 @@
 """Last Touch: a firm-wide team of deal agents. Flask UI for Vercel (exports `app`).
 
 Run locally: flask --app app run   (the original Streamlit UI is in streamlit_app.py)
-The page opens straight into the demo run on mock data. Every view is a URL: &tab=... picks a view,
-&brief=<note id> picks a founder brief, &closed=1 marks the fund closed, &signals=1 checks Akta signals,
-&live=1 uses live AI extraction when NICRRON_API_KEY is set.
+One full-screen chat over the demo run on mock data, with a side settings panel. Optional URL flags:
+?closed=1 marks the fund closed, ?signals=1 checks Akta signals, ?live=1 uses live AI extraction when
+NICRRON_API_KEY is set.
 """
 from __future__ import annotations
 
@@ -12,12 +12,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import copy  # noqa: E402
-import json  # noqa: E402
 import threading  # noqa: E402
 from html import escape  # noqa: E402
 from urllib.parse import urlencode  # noqa: E402
 
-import markdown  # noqa: E402
 from flask import Flask, jsonify, request  # noqa: E402
 
 import engine  # noqa: E402
@@ -57,8 +55,6 @@ ICONS = {
 }
 
 TAG = {"hot": "Hot", "park": "Parked", "warm": "Warm", "pass": "Pass"}
-TABS = [("channel", "Chat"), ("today", "Today"), ("triage", "Inbox triage"),
-        ("briefs", "Briefs"), ("watch", "Watchlist"), ("memory", "Memory")]
 HUE = {"ava": "#0a84ff", "ben": "#30b0c7", "cara": "#bf5af2"}
 
 # Runs are deterministic on mock data, so one result per (live, signals, closed) is kept per server instance.
@@ -114,10 +110,6 @@ def agent_avatar(agent: str, members: dict) -> str:
     return f"<span class='avatar sys'>{icon('route' if who == 'Router' else 'watch', 16)}</span>"
 
 
-def tag(status: str) -> str:
-    return f"<span class='tag {e(status)}'>{icon(status, 12)}{e(TAG.get(status, status))}</span>"
-
-
 def link(params: dict, **changes) -> str:
     p = {**params, **changes}
     return "?" + urlencode({k: v for k, v in p.items() if v not in (None, "", 0, False)})
@@ -143,46 +135,15 @@ a{color:inherit;text-decoration:none}.ic{flex:none;vertical-align:-3px}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--warm);box-shadow:0 0 0 2px rgba(255,149,0,.18)}
 .dot.live{background:var(--ok);box-shadow:0 0 0 2px rgba(52,199,89,.2)}
 .page{max-width:1000px;margin:0 auto;padding:72px 24px 24px}
-.hero{padding:28px 6px 22px;display:grid;grid-template-columns:1fr auto;gap:20px;align-items:end}
-.hero h1{font-size:40px;line-height:1.05;letter-spacing:-.025em;margin:0 0 6px;font-weight:700}
-.hero p{margin:0;color:var(--muted);font-size:16px}
 .btn{display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border-radius:999px;font-weight:600;font-size:14px;
 background:var(--glass-strong);border:1px solid var(--edge);box-shadow:inset 0 1px 0 rgba(255,255,255,.6),0 4px 14px rgba(16,44,52,.12);transition:transform .15s}
 .btn:hover{transform:translateY(-1px)}.btn.primary{background:linear-gradient(180deg,#3d9bff,#0a84ff);color:#fff;border-color:rgba(255,255,255,.35)}
-.btn.off{opacity:.45;pointer-events:none}.actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
-.metrics{display:grid;grid-template-columns:repeat(6,1fr);margin:0 0 16px;padding:14px 8px}
-.metric{text-align:center;padding:2px 6px}.metric+.metric{border-left:1px solid var(--line)}
-.metric .k{font-size:12.5px;color:var(--muted)}.metric .v{font-size:26px;font-weight:600;letter-spacing:-.02em}
-.metric.hot .ic{color:var(--hot)}.metric.park .ic{color:var(--park)}.metric.warm .ic{color:var(--warm)}.metric.pass .ic{color:var(--pass)}
-.section{padding:22px 24px}.section h2{margin:0 0 16px;font-size:19px;font-weight:600;letter-spacing:-.01em}
-.sub{color:var(--muted);font-size:13px;margin:0 0 16px}
-.cols{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
-.card{background:var(--glass-strong);border:1px solid var(--edge);border-radius:18px;padding:16px 18px;box-shadow:inset 0 1px 0 rgba(255,255,255,.5)}
-.who{display:flex;align-items:center;gap:12px;margin-bottom:10px}.who b{display:block;font-size:17px}.who small{color:var(--muted);font-size:12.5px;line-height:1.35;display:block}
 .avatar{display:inline-grid;place-items:center;flex:none;border-radius:50%;color:#fff;font-weight:700;width:34px;height:34px;
 background:linear-gradient(160deg,color-mix(in srgb,var(--hue) 70%,#fff),var(--hue));box-shadow:inset 0 1px 0 rgba(255,255,255,.5),0 2px 8px rgba(0,0,0,.15)}
 .avatar.sys{background:linear-gradient(160deg,#aeaeb2,#636366)}
-.act{padding:12px 0;border-top:1px solid var(--line)}.act .t{font-size:14.5px}.act .t b{font-weight:600}
-.meta{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12.5px;margin-top:4px}
-.tag{display:inline-flex;align-items:center;gap:4px;padding:2px 9px 2px 7px;border-radius:999px;font-size:11.5px;font-weight:700;margin-right:6px;vertical-align:1px}
-.tag.hot{color:var(--hot);background:rgba(255,59,48,.13)}.tag.park{color:var(--park);background:rgba(10,132,255,.13)}
-.tag.warm{color:#c26a00;background:rgba(255,149,0,.16)}.tag.pass{color:var(--pass);background:rgba(142,142,147,.16)}
-@media (prefers-color-scheme:dark){.tag.warm{color:#ffb340}}
-.callout{display:flex;gap:10px;padding:12px 14px;border-radius:14px;margin:4px 0 8px;font-size:14px;background:rgba(255,149,0,.14);border:1px solid rgba(255,149,0,.3)}
-.callout .ic{color:var(--warm);margin-top:2px}.callout.info{background:rgba(10,132,255,.12);border-color:rgba(10,132,255,.28)}.callout.info .ic{color:var(--blue)}
-details summary{cursor:pointer;color:var(--blue);font-size:13px;margin-top:6px;list-style:none;display:inline-flex;align-items:center;gap:6px}
-details summary::-webkit-details-marker{display:none}
-pre{background:rgba(255,255,255,.35);border:1px solid var(--line);padding:12px 14px;border-radius:12px;white-space:pre-wrap;font:13px/1.5 ui-monospace,"SF Mono",Menlo,monospace;margin:8px 0;overflow-x:auto}
-@media (prefers-color-scheme:dark){pre{background:rgba(0,0,0,.25)}}
 .msg{display:flex;gap:12px;padding:12px 0;border-top:1px solid var(--line)}.msg:first-of-type{border-top:0}
 .msg .time{color:var(--muted);font-size:12px;margin-left:6px;font-weight:400}
-.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:600;white-space:nowrap}
-.seg{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
-.seg a{padding:6px 12px;border-radius:999px;font-size:13px;background:var(--glass-strong);border:1px solid var(--edge)}
-.seg a.on{background:linear-gradient(180deg,#3d9bff,#0a84ff);color:#fff;border-color:transparent}
-.brief h3{margin:0 0 10px;font-size:20px}.brief p{margin:8px 0}
-.split{display:grid;grid-template-columns:1fr 1fr;gap:14px}ul.plain{list-style:none;padding:0;margin:10px 0}
+ul.plain{list-style:none;padding:0;margin:10px 0}
 ul.plain li{display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line)}
 code{font:12px ui-monospace,"SF Mono",Menlo,monospace}
 .toolcard{margin:6px 0 6px 46px;max-width:620px;padding:9px 12px;border-radius:14px;font-size:12.5px;background:var(--glass);border:1px dashed var(--edge);box-shadow:inset 0 1px 0 rgba(255,255,255,.4)}
@@ -190,8 +151,6 @@ code{font:12px ui-monospace,"SF Mono",Menlo,monospace}
 .toolcard .tk{font-weight:700;text-transform:uppercase;letter-spacing:.04em;font-size:10.5px;color:var(--blue)}
 .toolcard code{display:block;margin:4px 0 2px;font-size:12.5px}.toolcard .tr{color:var(--muted)}
 .corner{position:fixed;top:18px;right:20px;z-index:30}
-.views{display:flex;flex-wrap:wrap;gap:6px}.views a{padding:6px 12px;border-radius:999px;font-size:13px;background:var(--glass);border:1px solid var(--edge)}
-.views a.on{background:linear-gradient(180deg,#3d9bff,#0a84ff);color:#fff;border-color:transparent}
 .icon-only{padding:10px;width:40px;height:40px;justify-content:center}
 .chatpage{max-width:none;padding:0;height:100vh;height:100dvh}
 .chatwrap{height:100%;display:flex;flex-direction:column}
@@ -214,9 +173,7 @@ background:var(--glass-strong);border-radius:22px 0 0 22px;border-right:0;overfl
 .add{display:flex;gap:8px;padding:5px;border-radius:999px;background:var(--glass);border:1px solid var(--edge)}
 .hint{color:var(--muted);font-size:12.5px;margin:10px 2px 0}.hint.err{color:var(--hot)}
 button.btn{cursor:pointer;font:inherit;font-weight:600;font-size:14px;color:inherit}
-@media (max-width:980px){.metrics{grid-template-columns:repeat(3,1fr);row-gap:12px}.metric:nth-child(4){border-left:0}.cols,.split{grid-template-columns:1fr}.hero{grid-template-columns:1fr}.actions{justify-content:flex-start}}
-@media (max-width:620px){.page{padding:64px 12px 16px}.hero{padding:22px 20px}.hero h1{font-size:32px}.hero{padding:18px 4px 16px}.section{padding:18px 16px}
-.metric .v{font-size:22px}.corner{top:12px;right:12px}}
+@media (max-width:620px){.corner{top:12px;right:12px}}
 """
 
 
@@ -272,32 +229,6 @@ JS = """
   });
 })();
 """
-
-
-def tab_today(state, leads, members):
-    cols = []
-    for mid in ["ava", "ben", "cara"]:
-        mem = members[mid]
-        h = [f"<div class='card'><div class='who'>{avatar(mem)}<div><b>{e(mem['name'])}</b><small>{e(mem['role'])}</small></div></div>"]
-        for n in leads:
-            if n.get("prior") and n["prior"]["who"] == mid:
-                h.append(f"<div class='callout'>{icon('alert', 16)}<div>You met <b>{e(n['founder'])}</b> ({e(n['company'])}) "
-                         f"{e(n['prior']['days'])} days ago at {e(n['prior']['where'])}. No follow-up was sent. They just wrote to Ava.</div></div>")
-        mine = [(n, a) for n in leads for a in n.get("actions", []) if a["who"] == mid and a["kind"] not in ("second_touch", "recheck")]
-        if not mine:
-            h.append("<p class='sub'>Nothing due.</p>")
-        for n, a in mine:
-            label = n.get("company") or n.get("founder")
-            when = a.get("due") or (a.get("trigger", "").replace("_", " ").replace(" | ", " or "))
-            h.append(f"<div class='act'><div class='t'>{tag(n['status'])}<b>{e(label)}</b>: {e(a['what'])}</div>"
-                     f"<div class='meta'>{icon('clock', 13)}{e(when)}</div>")
-            if a.get("draft"):
-                h.append(f"<details><summary>{icon('send', 13)}Draft</summary><pre>{e(a['draft'])}</pre></details>")
-            h.append("</div>")
-        h.append("</div>")
-        cols.append("".join(h))
-    return section("today", "Today's actions", "What each person at the firm should do next. Drafts are never sent automatically.",
-                   f"<div class='cols'>{''.join(cols)}</div>")
 
 
 def bubble(agent: str, text: str, t: str, members: dict) -> str:
@@ -428,85 +359,13 @@ def chat_api():
     return jsonify({"agent": agent, "text": text, "tools": tools, "avatar": agent_avatar(agent, state["members"])})
 
 
-def tab_triage(state, leads, members):
-    by_msg = {n.get("msg_id"): n for n in leads if n.get("msg_id")}
-    rows = []
-    for r in state["triage"]:
-        n = by_msg.get(r["id"], {})
-        if n.get("routed_to"):
-            oe = f"{first(members[n['owner']]['name'])} → {first(members[n['routed_to']]['name'])}"
-        else:
-            oe = first(members[n["owner"]]["name"]) if n else "-"
-        rows.append(f"<tr><td>{e(r['id'])}</td><td>{e(r['channel'])}</td><td>{e(r['from'])}</td><td>{e(r['preview'])}</td>"
-                    f"<td>{'Lead' if r['triage'] == 'keep' else 'Dropped'}</td><td>{tag(n['status']) if n.get('status') else '-'}</td>"
-                    f"<td>{e(oe)}</td><td>{e(n.get('score', ''))}</td><td>{e(n.get('reason') or r['reason'])}</td></tr>")
-    head = "".join(f"<th>{h}</th>" for h in ["ID", "Channel", "From", "Message", "Decision", "Status", "Owner → evaluator", "Score", "Why"])
-    return section("triage", "Inbox triage", "Every inbound message, the agent's decision and the reason.",
-                   f"<div class='card scroll'><table><thead><tr>{head}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>")
-
-
-def tab_briefs(state, leads, members, params):
-    choices = [n for n in leads if n.get("status") != "pass"] + [n for n in leads if n.get("status") == "pass"]
-    pick = next((n for n in choices if n["id"] == params.get("brief")), choices[0])
-    seg = "".join(f"<a class='{'on' if n is pick else ''}' href='{link(params, brief=n['id'])}'>{e(n.get('company') or n.get('founder'))}</a>"
-                  for n in choices)
-    body = markdown.markdown(escape(engine.render_brief(pick, members), quote=False))
-    return section("briefs", "Founder briefs", "Every claim is tagged with its source: [message id] = the founder's own message, "
-                   "[firm memory] = Roundtable note history, [Akta] = outside data.",
-                   f"<div class='seg'>{seg}</div><div class='card brief'>{tag(pick['status'])}{body}</div>")
-
-
-def tab_watch(state, leads, params):
-    closed = state["fund"]["status"] == "closed"
-    btns = (f"<div class='actions' style='justify-content:flex-start;margin-bottom:14px'>"
-            f"<a class='btn {'off' if closed else ''}' href='{link(params, closed=1, tab='watch')}'>{icon('flag', 16)}Mark {e(state['fund']['label'])} as closed</a>"
-            f"<a class='btn' href='{link(params, signals=1, tab='watch')}'>{icon('signal', 16)}Check Akta signals</a></div>")
-    watched = [n for n in leads if n["status"] == "park" or n.get("was_parked")]
-    cards = []
-    for n in watched:
-        c = [f"<div class='card'><div class='t'>{tag(n['status'])}<b>{e(n.get('company'))}</b>: {e(n.get('one_liner', ''))}</div>"
-             f"<p class='sub' style='margin:6px 0 0'>{e(n.get('reason', ''))}</p>"]
-        for s in n.get("signals", []):
-            c.append(f"<div class='callout info' style='margin-top:10px'>{icon('signal', 16)}<div>Signal: {e(s['text'])} [{e(s['source'])}]</div></div>")
-        for act in n.get("actions", []):
-            if act.get("draft") and act["kind"] == "reengage":
-                c.append(f"<pre>{e(act['draft'])}</pre>")
-        c.append("</div>")
-        cards.append("".join(c))
-    return section("watch", "Watchlist", "Parked founders resurface when the fund closes or a new signal appears.",
-                   btns + ("".join(cards) or "<p class='sub'>No parked founders.</p>"))
-
-
-def tab_memory(state, notes):
-    mem = [{k: n.get(k) for k in ("id", "company", "founder", "status", "owner", "routed_to", "score", "touches")} for n in notes]
-    traces = "".join(f"<li>{icon('signal', 15)}<span><b>{e(t['agent'])}</b>: {len(t['steps'])} steps"
-                     + (f" · PRISM id <code>{e(t['prism_id'])}</code>" if t.get("prism_id") else " · local trace") + "</span></li>"
-                     for t in state.get("traces", []))
-    status = "".join(f"<li><i class='dot {'live' if mode == 'live' else ''}'></i><span>{e(name)}: {e(mode)}</span></li>"
-                     for name, (mode, _err) in ix.status().items())
-    return section("memory", "Memory", f"One shared note per founder, read and written by every agent. Run {e(state['run_id'])}.",
-                   f"<div class='card' style='margin-bottom:14px'><b>Integrations</b><ul class='plain'>{status}</ul></div>"
-                   f"<div class='split'><div class='card'><b>Firm memory</b><details><summary>Show notes JSON</summary>"
-                   f"<pre>{e(json.dumps(mem, indent=1, default=str))}</pre></details></div>"
-                   f"<div class='card'><b>Agent traces</b> (PRISM trajectories)<ul class='plain'>{traces}</ul>"
-                   f"<details><summary>Raw steps</summary><pre>{e(json.dumps(state.get('traces', []), indent=1, default=str))}</pre></details></div></div>")
-
-
-def section(name, title, sub, body):
-    heading = f"<h2>{e(title)}</h2>" if title else ""
-    return f"<section class='glass section'>{heading}{body}</section>"
-
-
 @app.route("/")
 def index():
-    params = {k: request.args.get(k) for k in ("live", "closed", "signals", "tab", "brief")}
+    params = {k: request.args.get(k) for k in ("live", "closed", "signals")}
     params["live"] = 1 if (params.get("live") == "1" and ix.LLM_CLIENT.live) else 0
-    tab = params.get("tab") if params.get("tab") in dict(TABS) else "channel"
-    views_nav = "".join(f"<a class='{'on' if t == tab else ''}' href='{link(params, tab=t)}'>{label}</a>" for t, label in TABS)
     state = get_state(bool(params["live"]), params.get("signals") == "1", params.get("closed") == "1")
 
-    notes, members = state["notes"], state["members"]
-    leads = [n for n in notes if n.get("status")]
+    members = state["members"]
 
     live = ""
     if ix.LLM_CLIENT.live:
@@ -516,18 +375,14 @@ def index():
     team = "".join(f"<li>{avatar(m, 32)}<span><b>{e(m['name'])}</b><small>{e(m['role'])}</small></span></li>" for m in members.values())
     settings = (f"<dialog id='settings' class='glass sheet'><div class='sheet-head'><h2>Settings</h2>"
                 f"<button class='btn icon-only' id='close-settings' aria-label='Close'>{icon('x', 16)}</button></div>"
-                f"<h3>Views</h3><nav class='views'>{views_nav}</nav>{live}<h3>Team</h3><ul class='plain team'>{team}</ul><ul class='plain team' id='people'></ul>"
+                f"{live}<h3>Team</h3><ul class='plain team'>{team}</ul><ul class='plain team' id='people'></ul>"
                 f"<h3>Add a person</h3><form id='add-person' class='add'><input id='username' autocomplete='off' placeholder='Username, e.g. @dana'>"
                 f"<button class='btn primary'>{icon('userplus', 16)}Add</button></form>"
                 f"<p class='hint' id='add-hint'>Each person gets their own agent in the firm chat. Saved in this browser for the demo.</p></dialog>")
 
-    views = {"today": lambda: tab_today(state, leads, members), "channel": lambda: tab_channel(state, members, params),
-             "triage": lambda: tab_triage(state, leads, members), "briefs": lambda: tab_briefs(state, leads, members, params),
-             "watch": lambda: tab_watch(state, leads, params), "memory": lambda: tab_memory(state, notes)}
-
     return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<title>Last Touch</title><style>{CSS}</style></head><body>{corner}<main class='page{" chatpage" if tab == "channel" else ""}'>"
-            f"{views[tab]()}</main>{settings}<script>{JS}</script></body></html>")
+            f"<title>Last Touch</title><style>{CSS}</style></head><body>{corner}<main class='page chatpage'>"
+            f"{tab_channel(state, members, params)}</main>{settings}<script>{JS}</script></body></html>")
 
 
 if __name__ == "__main__":

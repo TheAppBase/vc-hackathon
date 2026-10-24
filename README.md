@@ -37,7 +37,7 @@ Without keys it runs fully on cached or demo data, and every fallback is labelle
 - **All people, funds and startups in `data/` are fictional.** Akta fixture comps list real companies by name only.
 
 ## Files
-- `app.py`: the Flask UI for Vercel (`streamlit_app.py` is the original Streamlit UI) (Today's actions, Firm channel, Inbox triage, Briefs, Watchlist, Memory & traces)
+- `app.py`: the Flask UI for Vercel: one full-screen chat with a side settings panel (`streamlit_app.py` is the original multi-view Streamlit UI) (Today's actions, Firm channel, Inbox triage, Briefs, Watchlist, Memory & traces)
 - `engine.py`: agents, rules, routing, follow-up rules, Watcher
 - `integrations.py`: Nicrron, Akta, PRISM, Roundtable, plus a cache
 - `data/`: synthetic inbox (14 messages), firm and partner profiles, firm-memory seed, Akta demo fixtures
@@ -45,4 +45,4 @@ Without keys it runs fully on cached or demo data, and every fallback is labelle
 ## Deploy (live link for Devpost)
 Vercel: import the GitHub repo; `app.py` exports the Flask `app`, so no framework preset or build settings are needed.
 Add the keys under Settings → Environment Variables (`NICRRON_API_KEY`, `ROUNDTABLE_MCP_URL`, `ROUNDTABLE_MCP_TOKEN`).
-On Vercel, runtime files go to `/tmp/last-touch`. Every view is a URL (`?run=1&tab=briefs`), so the demo needs no server state.
+On Vercel, runtime files go to `/tmp/last-touch`. The demo needs no server state.

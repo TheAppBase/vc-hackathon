@@ -1,5 +1,4 @@
 flask>=3.0
-markdown
 openai>=1.40
 httpx>=0.24
 python-dotenv
