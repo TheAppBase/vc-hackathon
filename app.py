@@ -116,8 +116,9 @@ def public(user: dict) -> dict:
 def current() -> dict | None:
     u = session.get("u")
     user = load_user(u) if u else None
-    # A password change bumps pw_ver, which signs out every other device.
-    if u and (not user or session.get("pv", 0) != user.get("pw_ver", 0)):
+    # A password change bumps pw_ver, which signs out every other device. Only a newer pw_ver than the session's signs
+    # out: an older one means the read was stale, never that the password changed.
+    if u and (not user or user.get("pw_ver", 0) > session.get("pv", 0)):
         session.clear()
         return None
     return user

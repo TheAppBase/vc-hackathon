@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import threading
-import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -55,9 +54,9 @@ def get(path: str):
         f = LOCAL / path
         return json.loads(f.read_text()) if f.exists() else None
     url = f"https://{STORE_ID}.private.blob.vercel-storage.com/{quote(path, safe='/')}"
-    # Bust the CDN cache so a read right after an overwrite sees the new version.
-    r = httpx.get(url, params={"v": str(time.time_ns())}, headers={"authorization": f"Bearer {TOKEN}", "cache-control": "no-cache"},
-                  timeout=15)
+    # cache=0 reads from origin storage, not the CDN, so a read right after an overwrite sees the new version
+    # (overwrites otherwise take up to 60 seconds to propagate). Same as the Blob SDK's useCache: false.
+    r = httpx.get(url, params={"cache": "0"}, headers={"authorization": f"Bearer {TOKEN}"}, timeout=15)
     if r.status_code == 404:
         return None
     r.raise_for_status()
