@@ -1,0 +1,6 @@
+streamlit>=1.40
+pandas
+openai>=1.40
+httpx>=0.24
+python-dotenv
+prismtrace-sdk

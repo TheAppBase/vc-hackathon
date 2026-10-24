@@ -1,0 +1,24 @@
+[
+  {
+    "id": "n-seed-01",
+    "founder": "Maya Okafor",
+    "company": "Quillstack",
+    "owner": "ben",
+    "touches": [
+      {"date": "2026-09-08", "who": "ben", "channel": "event", "where": "NYC Founder Night",
+       "summary": "Quick chat at the bar. ML PhD building agents for finance teams. Said he'd follow up."}
+    ],
+    "actions": []
+  },
+  {
+    "id": "n-seed-02",
+    "founder": "Ravi Menon",
+    "company": "Cartwheel",
+    "owner": "ava",
+    "touches": [
+      {"date": "2026-06-14", "who": "ava", "channel": "email", "where": "inbound",
+       "summary": "Grocery delivery for college campuses. Passed: too early. Asked to stay in touch."}
+    ],
+    "actions": []
+  }
+]
