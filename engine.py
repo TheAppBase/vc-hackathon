@@ -6,6 +6,7 @@ extracts their fields and decides what each message asks for; without a key, the
 from __future__ import annotations
 
 import datetime as dt
+import math
 import re
 
 FIT_KEYWORDS = {
@@ -20,25 +21,38 @@ SECTOR_KEYWORDS = {
     "devtools": ["developer", "developers", "devtool", "devtools", "api", "apis", "open-source", "open source", "sdk",
                  "infra", "infrastructure", "observability", "webhook", "webhooks"],
     "fintech": ["fintech", "payments", "banking", "lending", "finance team", "finance teams", "accounting"],
-    "consumer": ["consumer", "marketplace", "app for", "d2c", "dtc"],
+    "consumer": ["consumer", "marketplace", "app for", "d2c", "dtc", "restaurant", "shoppers"],
     "cpg": ["cpg", "beverage", "beverages", "snack", "snacks", "grocery", "retail", "stores"],
-    "climate": ["climate", "carbon", "energy", "solar", "battery", "batteries"],
+    "climate": ["climate", "carbon", "clean energy", "renewable energy", "energy storage", "energy grid", "solar", "battery",
+                "batteries", "decarbonization", "climate tech"],
     "health": ["health", "healthcare", "clinic", "clinics", "patient", "patients", "medical", "biotech"],
 }
 TECH_KEYWORDS = ["engineer", "phd", "machine learning", "open-source", "open source", "research", "cto"]
-STOP = {"the", "a", "an", "my", "our", "his", "her", "their", "with", "some", "someone", "team", "him", "them", "us",
+MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
+          "december"]
+STOP = {"tons", "plenty", "dozens", "loads", "another", "numerous", "various", "quite", "maybe", "like", "all", "both",
+        "each", "one", "nobody", "somebody", "anybody", "anyone", "last", "next", "week", "month", "morning", "evening",
+        "night", "afternoon", "folks", "guys", "investor", "vc", "vcs", "partner", "partners", "the", "a", "an", "my", "our", "his", "her", "their", "with", "some", "someone", "team", "him", "them", "us",
         "investors", "founders", "founder", "two", "three", "four", "this", "that", "these", "those", "people", "everyone",
         "up", "today", "yesterday", "tonight", "and", "to", "for", "at", "in", "on", "about", "who", "it", "again", "back",
         "recently", "earlier", "later", "from", "of", "lots", "lot", "many", "several", "few", "bunch", "couple", "other",
         "more", "new", "great", "good", "amazing", "interesting", "cool", "really", "very", "so", "just", "also", "there",
         "here", "him", "she", "he", "they", "we", "you", "i", "was", "is", "and", "but", "then", "after", "before"}
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-PLACEHOLDERS = {"unknown", "n/a", "na", "none", "null", "tbd", "not stated", "not mentioned", "?", "-", "--"}
+
+
+def _word_re(w: str) -> str:
+    # Whole words, with simple endings: "api" doesn't match "rapidly" or "capital", "cto" doesn't match "director",
+    # but "engineers", "researcher", "consumers" and "banking" still match.
+    return rf"(?<![a-z0-9]){re.escape(w)}(?:s|es|er|ers|ing)?(?![a-z0-9])"
 
 
 def has_word(low: str, words: list[str]) -> bool:
-    """Whole-word match, so "api" doesn't match "rapidly" and "cto" doesn't match "director"."""
-    return any(re.search(rf"(?<![a-z0-9]){re.escape(w)}(?![a-z0-9])", low) for w in words)
+    return any(re.search(_word_re(w), low) for w in words)
+
+
+def word_hits(low: str, words: list[str]) -> int:
+    return sum(len(re.findall(_word_re(w), low)) for w in words)
 
 
 EMPTY_NOTE = {"founder": None, "company": None, "event": None, "sector": None, "stage": None, "one_liner": None,
@@ -83,18 +97,25 @@ Their focus: {focus}."""
 
 # --------------------------------------------------------------------------- keyword extraction (no LLM key)
 TITLE = r"(?:(?:Dr|Mr|Mrs|Ms|Mx|Prof)\.?\s+)?"
-NAME_WORD = r"[A-Z][a-zà-ÿ]*(?:['’][A-Z]?[a-zà-ÿ]+|[A-Z][a-zà-ÿ]+)*"  # Maya, O'Brien, McDonald, DeShawn
-NAME = rf"{TITLE}({NAME_WORD}(?:[ -]{NAME_WORD}){{0,2}})"
+CAP = r"[A-ZÀ-ÖØ-ÞŁŚŻŹĆŃŠČŽ]"
+LOWER = r"[a-zß-öø-ÿłśżźćńščž]"
+NAME_WORD = rf"(?:{CAP}{LOWER}*(?:['’]{CAP}?{LOWER}+|{CAP}{LOWER}+)*|[A-Z]{{2}}(?![a-z]))"  # Maya, O'Brien, McDonald, José, JD
+PARTICLE = r"(?:de|la|del|da|di|van|von|der|le|du|bin|al)"
+NAME = rf"{TITLE}({NAME_WORD}(?:[ -](?:{PARTICLE} )*{NAME_WORD}){{0,2}})"
+DESCRIPTOR = r"(?:(?:the |a |an )?(?:[A-Z]{2,}|[A-Z][a-z]+) (?:founder|cofounder|co-founder|alum|alumna|alumnus|ceo|cto|exec|engineer) )"
 COMPANY = r"([A-Z][A-Za-z0-9&.\-]*[A-Za-z0-9](?:\s[A-Z][A-Za-z0-9&.\-]*[A-Za-z0-9])?)"
-EVENT_WORDS = r"(?:hackathon|conference|summit|meetup|demo day|dinner|breakfast|lunch|happy hour|event|panel|mixer|party|offsite|fair|expo|retreat)"
-VERBS = (r"(?:met with|met|meeting with|talked to|talked with|spoke to|spoke with|chatted with|caught up with|ran into|"
+VERBS = (r"(?:met up with|catching up with|caught up with|met with|met|meeting with|talked to|talked with|spoke to|spoke with|chatted with|caught up with|ran into|"
          r"sat down with|(?:had |grabbed )?(?:a )?(?:call|coffee|lunch|dinner|breakfast|drinks|chat|meeting|zoom) with)")
 UNITS = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mm": 1e6, "mn": 1e6, "million": 1e6, "b": 1e9, "bn": 1e9, "billion": 1e9}
-MONEY = r"\$?\s?([\d][\d.,]*)\s*(k|thousand|mm|mn|m|million|bn|b|billion)?\b"
-SENTENCE_END = re.compile(r"(?<!\bDr)(?<!\bMr)(?<!\bMs)(?<!\bMrs)(?<!\bSt)(?<!\bvs)(?<=[.!?])\s+|\n+")
+MONEY = r"\$?\s?(?<![\d.,])([\d][\d.,]{0,15})\s*(k|thousand|mm|mn|m|million|bn|b|billion)?\b"  # bounded: no backtracking blowup
+SENTENCE_END = re.compile(r"(?<=[.!?])(?<!\bDr\.)(?<!\bMr\.)(?<!\bMs\.)(?<!\bMrs\.)(?<!\bMx\.)(?<!\bProf\.)(?<!\bSt\.)"
+                          r"(?<!\bvs\.)(?<!\be\.g\.)(?<!\bi\.e\.)(?<!\b[A-Z]\.)\s+|\n+")
 MINE = re.compile(r"\b(i'll|i will|i need to|i should|i'm going to|i am going to|i want to|we'll|we will|we need to|"
-                  r"let's|follow up|follow-up|remind me)\b", re.I)
-DONE = re.compile(r"\b(sent|done|followed up|introduced|booked|scheduled|wrapped up|already|finished|completed)\b", re.I)
+                  r"let's|follow up|follow-up|remind me|check in|check back|circle back|touch base|reconnect)\b", re.I)
+DONE = re.compile(r"\b(sent|done|followed up|introduced|booked|scheduled|wrapped up|finished|completed)\b", re.I)
+# The investor's own finished step: "Sent Maya the deck", "I introduced her to Cara", "Done:" (not "She booked $25k MRR").
+MY_DONE = re.compile(r"^(?:i(?:'ve| have)?\s+|we(?:'ve| have)?\s+|just\s+|already\s+)?(?:sent|followed up|introduced|booked|"
+                     r"scheduled|finished|completed|intro'd|emailed|pinged)\b|^done\b|\b(?:is|it's|that's|all) done\b", re.I)
 ACTION = re.compile(r"\b(send|intro|introduce|schedule|set up|loop in|book|get (?:him|her|them)|reach out|ping|email)\b", re.I)
 
 
@@ -135,45 +156,81 @@ def due_from(text: str, today: dt.date) -> str | None:
     return None
 
 
-def next_step_of(text: str) -> str | None:
+def next_step_of(text: str, founder: str | None = None) -> str | None:
     """The investor's own next action: an explicit "Next step: ...", else a first-person or follow-up sentence, else an
-    action sentence that isn't about what the founder will do. Long unpunctuated dictation is cut to the clause."""
+    action sentence (unless it's the founder's own plan, like "She will send the data room"). Long unpunctuated
+    dictation is cut to the clause."""
     sentences = [x.strip() for x in SENTENCE_END.split(text) if x and x.strip()]
     for sent in sentences:
         m = re.search(r"\b(?:next steps?|next|to ?do|follow[- ]up)\s*(?::|\s[\-–])\s*(.+)", sent, flags=re.I)
         if m:
             return _clause(m.group(1))
-    open_ = [x for x in sentences if not DONE.search(x)]  # "Sent Priya the intro, done" is not a next step
-    mine = [x for x in open_ if MINE.search(x)]
-    if mine:
-        return _clause(mine[0], MINE)
-    theirs = re.compile(r"^(he|she|they|the founder|founder)\b", re.I)
-    acts = [x for x in open_ if ACTION.search(x) and not theirs.search(x)]
-    return _clause(acts[0], ACTION) if acts else None
+    who = r"he|she|they|her team|his team|their team|the founder|the team"
+    if founder:
+        who += "|" + re.escape(founder.split()[0])
+    theirs = re.compile(rf"^(?:{who})\s+(?:will|'ll|is going to|are going to|plans? to|promised to|wants? to|is|are)\b", re.I)
+
+    def open_from(sentence: str, rx: re.Pattern) -> str | None:
+        m = rx.search(sentence)
+        if not m or DONE.search(sentence[m.start():]):
+            return None  # "Sent Priya the intro, done" is not a next step
+        return _clause(sentence, rx)
+
+    for rx in (MINE, ACTION):
+        for sent in sentences:
+            if rx is ACTION and theirs.search(sent):
+                continue
+            step = open_from(sent, rx)
+            if step:
+                return step
+    return None
 
 
 def _clause(sentence: str, start_at: re.Pattern | None = None) -> str:
     words = sentence.strip().rstrip(".!?").split()
-    if len(words) > 22 and start_at is not None:
-        m = start_at.search(sentence)
+    if start_at is not None and (len(words) > 22 or re.match(rf"\s*(?i:{VERBS})\b", sentence)):
+        m = start_at.search(sentence)  # "met sam today ... I need to follow up friday" -> "I need to follow up friday"
         words = sentence[m.start():].rstrip(".!?").split() if m else words
     return " ".join(words[:22])[:160]
+
+
+def _founder_in(text: str, low: str) -> str | None:
+    """Who they met. Capitalized names after a meeting verb (skipping "YC founder", titles and day words), else, for
+    all-lowercase dictation, one or two words after the verb that are followed by "from", "(", "at", a comma or the end."""
+    for m in re.finditer(rf"\b(?i:{VERBS})\s+(?i:the founder |founder )?{DESCRIPTOR}?{NAME}", text):
+        cand = m.group(1)
+        if cand.split()[0].lower() not in STOP | set(WEEKDAYS) | set(MONTHS):
+            return cand
+        w = re.match(rf"\s*(?:\w+\s+){{0,3}}?(?i:with)\s+{DESCRIPTOR}?{NAME}", text[m.end():])  # "Met Monday with Maya Okafor"
+        if w and w.group(1).split()[0].lower() not in STOP | set(WEEKDAYS) | set(MONTHS):
+            return w.group(1)
+    m = re.search(rf"\b{VERBS}\s+(?:the founder |founder |(?:dr|mr|mrs|ms|prof)\.? )?([a-zà-ÿ'’]+)(?:\s+([a-zà-ÿ'’]+))?"
+                  r"(?=\s*(?:\bfrom\b|\(|\bat\b|,|\.|;|\bwho\b|\bof\b|$))", low)
+    if not m or m.group(1) in STOP | set(WEEKDAYS) | set(MONTHS):
+        return None
+    words = [m.group(1)] + ([m.group(2)] if m.group(2) and m.group(2) not in STOP | set(WEEKDAYS) | set(MONTHS) else [])
+    if m.group(2) and len(words) == 1:
+        return None  # "met maya last week": not sure "maya" is the whole name, and the second word isn't a name
+    return " ".join(w.capitalize() for w in words)
+
+
+EVENT_CORE = r"(?:hackathon|conference|summit|meetup|demo day|dinner|breakfast|lunch|happy hour|event|panel|mixer|party|offsite|expo|retreat)"
+NOT_PAST = r"(?!-)(?!\s+(?i:next|tomorrow|tonight|sometime|soon|this|later|on \w+day))"
+
+
+def _event_in(text: str, low: str) -> str | None:
+    m = re.search(rf"\b(?i:at) (?:the |a |an )?((?:[A-Z0-9][\w'&-]*\s){{0,4}}(?i:{EVENT_CORE})|(?:[A-Z0-9][\w'&-]*\s){{1,4}}"
+                  rf"(?i:week|fair)|(?i:career|job|trade|science|startup) fair)\b{NOT_PAST}", text)
+    if not m and text == low:  # all-lowercase dictation
+        m = re.search(rf"\bat (?:the |a |an )?((?:[a-z0-9][\w'&-]*\s){{0,3}}{EVENT_CORE})\b{NOT_PAST}", low)
+    return m.group(1).strip() if m else None
 
 
 def heuristic_note(text: str, today: dt.date) -> dict:
     """Keyword extraction for when no LLM key is set. Only fills fields it can read straight from the note."""
     ext = {**EMPTY_NOTE, "metrics": {}, "background": [], "step_done": False}
     low = text.lower()
-    # The verb is case-insensitive ("Met", "met"); the name must be capitalized. "intro to X" is who to introduce, not who was met.
-    m = re.search(rf"\b(?i:{VERBS})\s+(?i:the founder |founder )?{NAME}", text)
-    if m and m.group(1).split()[0].lower() not in STOP:
-        ext["founder"] = m.group(1)
-    else:
-        # Dictation is sometimes all lowercase: take the one or two words after the verb unless they are common words.
-        m = re.search(rf"\b{VERBS}\s+([a-zà-ÿ'’]+)(?:\s+([a-zà-ÿ'’]+))?", low)
-        if m and m.group(1) not in STOP:
-            words = [m.group(1)] + ([m.group(2)] if m.group(2) and m.group(2) not in STOP else [])
-            ext["founder"] = " ".join(w.capitalize() for w in words)
+    ext["founder"] = _founder_in(text, low)
     m = re.search(rf"\b(?i:from|founder of|ceo of|cto of|co-founder of|cofounder of|startup called|company called)\s+{COMPANY}", text)
     if m and m.group(1).split()[0] not in ("The", "A", "An", "I", "We"):
         ext["company"] = m.group(1)
@@ -182,13 +239,10 @@ def heuristic_note(text: str, today: dt.date) -> dict:
         m = re.search(rf"{re.escape(ext['founder'].lower())}\s*(?:\(|\bfrom\b|\bof\b)\s*([a-z0-9][a-z0-9&.\-]+)", low)
         if m and m.group(1) not in STOP:
             ext["company"] = m.group(1).strip(".-").capitalize()
-    m = re.search(rf"\bat (?:the |a |an )?((?:[A-Z][\w'&-]*\s){{0,4}}(?i:{EVENT_WORDS}))\b", text)
-    if m:
-        ext["event"] = m.group(1).strip()
-    for sector, words in SECTOR_KEYWORDS.items():
-        if has_word(low, words):
-            ext["sector"] = sector
-            break
+    ext["event"] = _event_in(text, low)
+    hits = {sector: word_hits(low, words) for sector, words in SECTOR_KEYWORDS.items()}
+    best = max(hits, key=lambda k: hits[k])
+    ext["sector"] = best if hits[best] else None
     if re.search(r"\bpre[- ]?seed\b", low):
         ext["stage"] = "pre-seed"
     elif re.search(r"\bseries a\b", low):
@@ -200,18 +254,18 @@ def heuristic_note(text: str, today: dt.date) -> dict:
     m = re.search(MONEY + r"\s*(?:mrr|/mo\b|a month|per month|monthly)", low)
     if m:
         ext["metrics"]["mrr_usd"] = _num(m.group(1), m.group(2) or "")
-    m = re.search(r"([\d][\d.,]*)\s*(k)?\s*(?:github )?stars\b", low)
+    m = re.search(r"(?<![\d.,])([\d][\d.,]{0,15})\s*(k)?\s*(?:github )?stars\b", low)
     if m:
         ext["metrics"]["github_stars"] = int(_num(m.group(1), m.group(2)))
-    m = re.search(r"([\d][\d,]*)\s*(?:paying )?customers\b", low)
+    m = re.search(r"(?<![\d,])([\d][\d,]{0,15})\s*(?:paying )?customers\b", low)
     if m:
         ext["metrics"]["paying_customers"] = int(_num(m.group(1)))
     ext["raising_usd"] = money_after(r"\braising", low)
     ext["background"] = [k for k in TECH_KEYWORDS if has_word(low, [k])][:3]
-    ext["next_step"] = next_step_of(text)
+    ext["next_step"] = next_step_of(text, ext["founder"])
     ext["next_due"] = due_from(ext["next_step"], today) if ext["next_step"] else None
     if not ext["next_step"]:
-        ext["step_done"] = bool(DONE.search(text))
+        ext["step_done"] = any(MY_DONE.search(x.strip()) for x in SENTENCE_END.split(text) if x and x.strip())
     return ext
 
 
@@ -233,9 +287,9 @@ def route_rules(text: str) -> dict:
         return {"intent": "lookup", "query": m.group(1)}
     if m := match(r"(?:source|find|look for|search for|discover|show me|get me|suggest|recommend|scout)\b"
                   r"(?:\s+(?:me|some|new|more|a few|good|great|promising|early[- ]stage|interesting))*"
-                  r"\s+(?:founders?|startups?|companies|teams)\b"
+                  r"(?:\s+(.+?))?\s+(?:founders?|startups?|companies|teams)\b"
                   r"(?:\s+(?:in|for|doing|working on|building|around|focused on|within|on)\s+(.+))?$"):
-        return {"intent": "source", "query": m.group(1) or ""}
+        return {"intent": "source", "query": " ".join(x for x in (m.group(1), m.group(2)) if x)}
     q = t.lower()
     if match(r"(?:rank|score|prioriti[sz]e) (?:my |the )?(?:founders|startups|companies|pipeline)$|rank$") or \
             re.search(r"^(?:show )?(?:me )?my (?:best )?founders$|^(?:who are )?my best founders$|^who should i (meet|back|call)", q):
@@ -247,7 +301,9 @@ def route_rules(text: str) -> dict:
         return {"intent": "team", "query": ""}
     if re.match(r"^(help|what can you do)$", q):
         return {"intent": "help", "query": ""}
-    if text.strip().endswith("?"):
+    if text.strip().endswith("?") or re.match(
+            r"^(?:did|do|does|have|has|am|is|are|was|were|can|could|should|would|will) (?:i|we|you|anyone|they|he|she|it)\b|"
+            r"^(?:what|when|where|which|why|how|who) (?:did|do|does|is|are|was|were|have|has|should|can|could|would|will)\b", q):
         return {"intent": "help", "query": ""}  # an unanswered question is never saved into the shared notes
     return {"intent": "save_note", "query": ""}
 
@@ -263,25 +319,43 @@ def tidy(text: str) -> str:
     return t
 
 
+def placeholder(v: str) -> bool:
+    """'Unknown', 'N/A.', 'Not specified', 'Unnamed startup'... are not values."""
+    key = re.sub(r"[^a-z/ ]+", "", v.lower()).strip()
+    return not key or bool(re.match(r"^(unknown|unnamed|unspecified|anonymous|n/?a|na|none|null|nil|tbd|tba|"
+                                     r"not (stated|specified|mentioned|provided|given|known|available|sure)|no (name|company))\b", key))
+
+
+def _number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0
+
+
 def clean_note(ext: dict | None) -> dict:
     """Coerce an extraction (from the LLM or the keyword rules) to the stored shape."""
     ext = ext or {}
     out = {**EMPTY_NOTE}
     for k in ("founder", "company", "event", "sector", "stage", "one_liner", "next_step"):
         v = ext.get(k)
-        v = str(v).strip() if isinstance(v, (str, int, float)) and not isinstance(v, bool) else ""
-        out[k] = v[:160] if v and v.lower() not in PLACEHOLDERS else None
+        if isinstance(v, list):  # several founders: keep the first, the rest go into background
+            names = [x.strip() for x in v if isinstance(x, str) and x.strip()]
+            v = names[0] if names else ""
+            if k == "founder" and len(names) > 1:
+                ext.setdefault("background", [])
+                if isinstance(ext["background"], list):
+                    ext["background"] = [f"also met {n}" for n in names[1:]] + ext["background"]
+        v = str(v).strip() if isinstance(v, (str, int)) and not isinstance(v, bool) else ""
+        out[k] = v[:160] if v and not placeholder(v) else None
     if out["sector"]:
         out["sector"] = out["sector"].lower()
     if out["stage"]:
         out["stage"] = out["stage"].lower().replace(" ", "-")
     m = ext.get("metrics") if isinstance(ext.get("metrics"), dict) else {}
     out["metrics"] = {k: float(v) for k, v in m.items()
-                      if k in ("mrr_usd", "stores", "pilots", "github_stars", "users", "paying_customers") and isinstance(v, (int, float)) and v}
+                      if k in ("mrr_usd", "stores", "pilots", "github_stars", "users", "paying_customers") and _number(v)}
     bg = ext.get("background") if isinstance(ext.get("background"), list) else []
-    out["background"] = [b.strip()[:80] for b in bg if isinstance(b, str) and b.strip() and b.strip().lower() not in PLACEHOLDERS][:5]
+    out["background"] = [b.strip()[:80] for b in bg if isinstance(b, str) and b.strip() and not placeholder(b)][:5]
     r = ext.get("raising_usd")
-    out["raising_usd"] = float(r) if isinstance(r, (int, float)) and r > 0 else None
+    out["raising_usd"] = float(r) if _number(r) else None
     d = ext.get("next_due")
     try:
         out["next_due"] = dt.date.fromisoformat(str(d)[:10]).isoformat() if d else None
@@ -296,7 +370,8 @@ def features(ext: dict, member: dict) -> dict:
     sector = (ext.get("sector") or "").lower()
     stage = (ext.get("stage") or "").lower()
     # An unknown or "other" sector is not "outside the thesis": the note just didn't say. Score it halfway.
-    thesis = 0.5 if sector in ("", "other") else 1.0 if sector in member["sectors"] else 0.0
+    known = {"ai", "devtools", "fintech", "consumer", "cpg", "climate", "health"}
+    thesis = 0.5 if sector not in known else 1.0 if sector in member["sectors"] else 0.0
     if stage and stage not in member["stages"]:
         thesis *= 0.5
     m = ext.get("metrics") or {}

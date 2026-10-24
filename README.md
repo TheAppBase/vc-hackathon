@@ -42,3 +42,10 @@ Without `BLOB_READ_WRITE_TOKEN` or `BLOB_STORE_ID`, data is stored in `runtime/s
 - `integrations.py`: PRISM (tracing, sessions, setup doctor), Nicrron, akta.pro and Roundtable
 - `env.py`: reads keys from the environment (trimming stray newlines) and scrubs secrets out of anything shown or logged
 - `store.py`: firm memory on Vercel Blob (`users/`, `notes/`, `actions/`, `akta/` lookup cache, `attempts/` password-try reservations)
+
+## Tests
+```bash
+python3 tests/test_engine.py   # keyword extraction, phrase router, clean-up of AI output
+python3 tests/test_guard.py    # secret redaction, PRISM verdict reading and time limits
+python3 tests/test_app.py      # accounts, sign-in limits, notes, founders, team, caps (local files, stand-in AI)
+```

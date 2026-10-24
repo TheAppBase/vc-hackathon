@@ -18,6 +18,7 @@ load_dotenv()
 import contextlib  # noqa: E402
 import datetime as dt  # noqa: E402
 import math  # noqa: E402
+import hashlib  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
@@ -46,8 +47,18 @@ class SharedKeySessions(SecureCookieSessionInterface):
 
     def get_signing_serializer(self, app):
         if not app.secret_key:
-            app.secret_key = env("SECRET_KEY") or store.shared_secret()
+            key = env("SECRET_KEY")
+            if not key and store.LIVE:
+                try:
+                    key = store.shared_secret()
+                except Exception as e:  # storage hiccup: don't break every page, and try the store again next request
+                    print(scrub(f"session key: store unavailable ({e}); using a temporary key"), flush=True)
+                    return super().get_signing_serializer(type("Tmp", (), {"secret_key": _TMP_KEY, "config": app.config})())
+            app.secret_key = key or _TMP_KEY  # local development without storage: one key per process
         return super().get_signing_serializer(app)
+
+
+_TMP_KEY = secrets.token_hex(32)
 
 
 app.session_interface = SharedKeySessions()
@@ -107,18 +118,33 @@ def _ts(iso: str) -> dt.datetime:
     return d.replace(tzinfo=dt.timezone.utc) if d.tzinfo is None else d.astimezone(dt.timezone.utc)
 
 
-def local_today() -> dt.date:
-    """The user's own date (the browser sends X-Local-Date), so "due today" matches their day, not the server's UTC day."""
-    utc = dt.datetime.now(dt.timezone.utc).date()
+def tz_offset() -> dt.timedelta:
+    """The user's UTC offset, from the browser (X-TZ-Offset, minutes as in getTimezoneOffset, so west is positive)."""
     try:
+        minutes = int(request.headers.get("X-TZ-Offset", ""))
+    except (ValueError, RuntimeError):
+        return dt.timedelta(0)
+    return -dt.timedelta(minutes=minutes) if -14 * 60 <= minutes <= 14 * 60 else dt.timedelta(0)
+
+
+def local_dt(iso: str) -> dt.datetime:
+    return _ts(iso) + tz_offset()
+
+
+def local_today() -> dt.date:
+    """The user's own date, so "due today" matches their day, not the server's UTC day."""
+    utc = dt.datetime.now(dt.timezone.utc)
+    try:
+        if request.headers.get("X-TZ-Offset"):
+            return (utc + tz_offset()).date()
         d = dt.date.fromisoformat(request.headers.get("X-Local-Date", "")[:10])
-    except ValueError:
-        return utc
-    return d if abs((d - utc).days) <= 1 else utc
+    except (ValueError, RuntimeError):
+        return utc.date()
+    return d if abs((d - utc.date()).days) <= 1 else utc.date()
 
 
 def nice_date(iso: str) -> str:
-    return _ts(iso).strftime("%a %b %d").replace(" 0", " ")
+    return local_dt(iso).strftime("%a %b %d").replace(" 0", " ")
 
 
 # --------------------------------------------------------------------------- users
@@ -131,6 +157,11 @@ def load_user(u: str) -> dict | None:
 
 
 def save_user(user: dict):
+    """Write the account. If the stored copy has a newer password (changed meanwhile on another device), keep it: a
+    request that loaded the account earlier must never undo a password change."""
+    stored = store.get(f"users/{user['username']}.json")
+    if stored and stored.get("pw_ver", 0) > user.get("pw_ver", 0):
+        user = {**user, "password": stored.get("password"), "pw_ver": stored["pw_ver"]}
     store.put(f"users/{user['username']}.json", user)
 
 
@@ -158,6 +189,14 @@ def current() -> dict | None:
         session.clear()
         return None
     return user
+
+
+def chat_sid(user: dict) -> str:
+    """The PRISM session id: one per open chat (the browser sends X-Chat-Id, made once per page load)."""
+    cid = request.headers.get("X-Chat-Id", "")
+    if re.fullmatch(r"[A-Za-z0-9-]{8,40}", cid):
+        return f"lt-{user['username']}-{cid[:12]}"
+    return session.get("sid") or f"lt-{user['username']}"
 
 
 def start_session(user: dict):
@@ -193,7 +232,7 @@ def traced(user: dict) -> bool:
 def trace_tool(user: dict, tool: str, inp: str, out: str, t0: float, status: str = "success"):
     if traced(user):
         name, aid = agent_of(user)
-        ix.TRACER.tool(name, aid, session.get("sid") or aid, tool, inp, out, int((time.time() - t0) * 1000), status)
+        ix.TRACER.tool(name, aid, chat_sid(user), tool, inp, out, int((time.time() - t0) * 1000), status)
 
 
 @app.teardown_request
@@ -256,21 +295,34 @@ def build_profile(a: dict, name: str) -> dict:
 
 
 # --------------------------------------------------------------------------- notes -> founders
+def redact_fields(fields: dict) -> dict:
+    """Secrets must not survive in any extracted field either (next step, background, one-liner...)."""
+    out = {}
+    for k, v in fields.items():
+        if isinstance(v, str):
+            v = guard.redact(v)[0]
+        elif isinstance(v, list):
+            v = [guard.redact(x)[0] if isinstance(x, str) else x for x in v]
+        out[k] = v
+    return out
+
+
 def extract(user: dict, text: str, when: dt.date) -> tuple[dict, str, str]:
     """Rewrite a note professionally and read the founder, company, event and next step out of it.
 
-    Returns (fields, reader, rewritten). Nicrron when configured; otherwise keyword rules and a light tidy-up."""
+    Returns (fields, reader, rewritten). Nicrron when configured; otherwise keyword rules and a light tidy-up. The AI sees
+    the whole note; a rewrite that is far shorter than the note (facts dropped) or far longer is not used."""
     if ix.LLM_CLIENT.live:
         name, aid = agent_of(user)
-        got = ix.LLM_CLIENT.json(engine.NOTE_SYSTEM.format(today=when.isoformat(), weekday=when.strftime("%A")), text[:4000],
-                                 name, session_id=session.get("sid"), trace=traced(user), agent_id=aid, max_tokens=900)
-        if got:
+        got = ix.LLM_CLIENT.json(engine.NOTE_SYSTEM.format(today=when.isoformat(), weekday=when.strftime("%A")), text[:guard.MAX_NOTE],
+                                 name, session_id=chat_sid(user), trace=traced(user), agent_id=aid,
+                                 max_tokens=min(8000, max(900, len(text) // 3 + 400)))
+        if isinstance(got, dict):
             rewritten = str(got.pop("note", "") or "").strip()
-            # A rewrite that is empty or balloons is not a rewrite: keep the user's words.
-            if not rewritten or len(rewritten) > 2 * len(text) + 300:
+            if not rewritten or len(rewritten) > 2 * len(text) + 300 or (len(text) > 200 and len(rewritten) < 0.4 * len(text)):
                 rewritten = engine.tidy(text)
-            return engine.clean_note(got), "Nicrron", guard.redact(rewritten)[0]
-    return engine.clean_note(engine.heuristic_note(text, when)), "keyword rules", engine.tidy(text)
+            return redact_fields(engine.clean_note(got)), "Nicrron", guard.redact(rewritten)[0]
+    return redact_fields(engine.clean_note(engine.heuristic_note(text, when))), "keyword rules", engine.tidy(text)
 
 
 ROUTES = {"save_note", "conversations", "rank", "source", "lookup", "who_knows", "team", "help", "chat"}
@@ -281,17 +333,18 @@ ROUTES = {"save_note", "conversations", "rank", "source", "lookup", "who_knows",
 def api_route(user):
     """Decide what a typed or dictated message asks for. The LLM decides when configured; phrase matching otherwise."""
     t0 = time.time()
-    text = str((request.get_json(silent=True) or {}).get("text") or "").strip()[:2000]
+    text = guard.redact(str((request.get_json(silent=True) or {}).get("text") or "").strip()[:2000])[0]  # before the AI or PRISM
     if not text:
         return jsonify({"intent": "help", "query": "", "reply": "", "engine": "none"})
     if ix.LLM_CLIENT.live:
         name, aid = agent_of(user)
         focus = (user.get("profile") or {}).get("focus") or "not set yet"
-        got = ix.LLM_CLIENT.json(engine.ROUTER_SYSTEM.format(focus=focus), text, name, session_id=session.get("sid"),
+        got = ix.LLM_CLIENT.json(engine.ROUTER_SYSTEM.format(focus=focus), text, name, session_id=chat_sid(user),
                                  trace=traced(user), agent_id=aid, max_tokens=300, fast=True)
-        if got and got.get("intent") in ROUTES:
-            out = {"intent": got["intent"], "query": str(got.get("query") or "").strip()[:120],
-                   "reply": str(got.get("reply") or "").strip()[:800], "engine": "Nicrron"}
+        if isinstance(got, dict) and isinstance(got.get("intent"), str) and got["intent"] in ROUTES:
+            q, rp = got.get("query"), got.get("reply")
+            out = {"intent": got["intent"], "query": q.strip()[:120] if isinstance(q, str) else "",
+                   "reply": rp.strip()[:800] if isinstance(rp, str) else "", "engine": "Nicrron"}
             trace_tool(user, "route", text[:300], json.dumps(out)[:300], t0)
             return jsonify(out)
     out = {**engine.route_rules(text), "reply": "", "engine": "rules"}
@@ -299,21 +352,61 @@ def api_route(user):
     return jsonify(out)
 
 
+INDEX_SIZE = 300
+
+
+def _compact(n: dict) -> dict:
+    return {k: n.get(k) for k in ("id", "text", "original", "created_at", "local_date", "extracted", "akta") if n.get(k) is not None}
+
+
+def notes_from(u: str, paths: list[str], index: dict | None, limit: int) -> list[dict]:
+    """A user's newest notes from their index blob; any note the index is missing is read and the index repaired."""
+    paths = paths[-limit:]
+    have = {n["id"]: n for n in (index or {}).get("notes", []) if isinstance(n, dict) and n.get("id")}
+    ids = [p.rsplit("/", 1)[-1].removesuffix(".json") for p in paths]
+    missing = [p for p, i in zip(paths, ids) if i not in have]
+    if missing:
+        for n in store.get_many(missing):
+            if n and n.get("id"):
+                have[n["id"]] = _compact(n)
+        keep = sorted(have.values(), key=lambda n: (n.get("created_at") or "", n.get("id") or ""))[-INDEX_SIZE:]
+        with contextlib.suppress(Exception):
+            store.put(f"index/{u}.json", {"notes": keep})
+    return [have[i] for i in reversed(ids) if i in have]
+
+
 def notes_of(u: str, limit: int = 200) -> list[dict]:
-    """A user's notes, newest first (read in parallel)."""
-    paths = list(reversed(store.list_paths(f"notes/{u}/")[-limit:]))
-    return [n for n in store.get_many(paths) if n]
+    """A user's notes, newest first: one list call and one index read instead of one read per note."""
+    return notes_from(u, store.list_paths(f"notes/{u}/"), store.get(f"index/{u}.json"), limit)
+
+
+def index_add(u: str, note: dict):
+    """Add a new note to the user's index (if two saves race, the next read repairs the index)."""
+    idx = store.get(f"index/{u}.json") or {"notes": []}
+    notes = [n for n in idx.get("notes", []) if isinstance(n, dict) and n.get("id") != note["id"]] + [_compact(note)]
+    store.put(f"index/{u}.json", {"notes": notes[-INDEX_SIZE:]})
 
 
 def _key(s: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
 
 
+def same_person(a: str, b: str) -> bool:
+    """"maya" and "maya okafor" are the same person (at the same company); "maya okafor" and "tom lee" are not."""
+    ta, tb = a.split(), b.split()
+    return ta == tb or (min(len(ta), len(tb)) == 1 and bool(ta) and bool(tb) and ta[0] == tb[0])
+
+
+def _fuller(a: str | None, b: str | None) -> str | None:
+    return a if (a and (not b or len(a.split()) >= len(b.split()))) else b
+
+
 def _merge(rec: dict, other: dict):
     """Fold record `other` into `rec` (one note linked them, e.g. "Maya Okafor from Quillstack")."""
     later = other if other["last_touch"] > rec["last_touch"] else rec
-    for f in ("founder", "company", "sector", "stage", "one_liner", "raising_usd", "event", "akta"):
+    for f in ("company", "sector", "stage", "one_liner", "raising_usd", "event", "akta"):
         rec[f] = rec.get(f) or other.get(f)
+    rec["founder"] = _fuller(rec.get("founder"), other.get("founder"))
     rec["metrics"] = {**other["metrics"], **rec["metrics"]}
     rec["background"] = list(dict.fromkeys(rec["background"] + other["background"]))[:6]
     earlier = rec if later is other else other
@@ -330,7 +423,8 @@ def founders_from(notes: list[dict]) -> list[dict]:
     founder and a company links their records."""
     recs, index = [], {}
     for n in sorted(notes, key=lambda n: (n.get("created_at") or "", n.get("id") or "")):
-        x = n.get("extracted") or engine.clean_note(engine.heuristic_note(n.get("text", ""), _ts(n.get("created_at")).date()))
+        when = dt.date.fromisoformat(n["local_date"]) if n.get("local_date") else local_dt(n.get("created_at")).date()
+        x = n.get("extracted") or engine.clean_note(engine.heuristic_note(n.get("original") or n.get("text", ""), when))
         fk, ck = _key(x.get("founder")), _key(x.get("company"))
         if not (fk or ck):
             continue
@@ -339,7 +433,7 @@ def founders_from(notes: list[dict]) -> list[dict]:
             r = index.get(k) if k else None
             if r is None or any(r is h for h in hits):
                 continue
-            if is_company and fk and r.get("founder") and _key(r["founder"]) != fk:
+            if is_company and fk and r.get("founder") and not same_person(_key(r["founder"]), fk):
                 continue
             hits.append(r)
         if not hits:
@@ -357,9 +451,10 @@ def founders_from(notes: list[dict]) -> list[dict]:
         for k in (fk, ck):
             if k:
                 index[k] = rec
-        for f in ("founder", "company", "sector", "stage", "one_liner", "raising_usd"):
+        for f in ("company", "sector", "stage", "one_liner", "raising_usd"):
             if x.get(f):
                 rec[f] = x[f]
+        rec["founder"] = _fuller(rec.get("founder"), x.get("founder"))  # "Maya" never replaces "Maya Okafor"
         rec["event"] = rec.get("event") or x.get("event")
         rec["metrics"].update(x.get("metrics") or {})
         rec["background"] = list(dict.fromkeys(rec["background"] + (x.get("background") or [])))[:6]
@@ -388,7 +483,7 @@ def status_of(rec: dict, today: dt.date) -> tuple[str, str]:
             if d == today + dt.timedelta(days=1):
                 return "due", "Due tomorrow"
             return "scheduled", f"Due {nice_date(rec['next_due'])}"
-        age = (today - _ts(rec["last_touch"]).date()).days
+        age = (today - local_dt(rec["last_touch"]).date()).days
         return ("overdue", f"Open for {age} days") if age > 7 else ("due", "Open")
     return "warm", "No next step"
 
@@ -406,12 +501,14 @@ def team_memory(user: dict) -> list[dict]:
     if user["username"] in cache:
         return cache[user["username"]]
     team = user.get("team", [])
-    mates = store.get_many([f"users/{m}.json" for m in team if USER_RE.match(m)])
+    mates = [m for m in store.get_many([f"users/{m}.json" for m in team if USER_RE.match(m)])
+             if m and user["username"] in m.get("team", [])]
+    names = [m["username"] for m in mates]
+    listings = store.list_many([f"notes/{u}/" for u in names])
+    indexes = store.get_many([f"index/{u}.json" for u in names])
     out = []
-    for mate in mates:
-        if not mate or user["username"] not in mate.get("team", []):
-            continue
-        notes = notes_of(mate["username"], 100)
+    for mate, paths, idx in zip(mates, listings, indexes):
+        notes = notes_from(mate["username"], paths, idx, 100)
         out.append({"username": mate["username"], "name": mate["name"], "first": first(mate["name"]),
                     "focus": (mate.get("profile") or {}).get("focus"), "notes": notes, "founders": founders_from(notes)})
     cache[user["username"]] = out
@@ -424,7 +521,8 @@ def with_team_facts(rec: dict, mem: list[dict]) -> dict:
     out, filled = {**rec, "metrics": dict(rec.get("metrics") or {})}, []
     for mate in mem:
         for r in mate["founders"]:
-            if not ((fk and fk == _key(r.get("founder"))) or (ck and ck == _key(r.get("company")))):
+            # Only a sure match: same company, or the same full name (a first name alone may be someone else).
+            if not ((ck and ck == _key(r.get("company"))) or (fk and " " in fk and fk == _key(r.get("founder")))):
                 continue
             for f in ("sector", "stage", "raising_usd", "founder", "company", "one_liner"):
                 if not out.get(f) and r.get(f):
@@ -507,12 +605,12 @@ def api_note_save(user):
         act["truncated"] = f"Only the first {guard.MAX_NOTE:,} characters were kept."
     if mode == "auto":
         name, aid = agent_of(user)
-        act["review"] = guard.review(name, aid, session.get("sid") or aid, act)
+        act["review"] = guard.review(name, aid, chat_sid(user), act)
     if act.get("review", {}).get("decision") == "block":
         act["status"], act["reason"] = "blocked", f"PRISM blocked this note: {act['review']['reason']}"
     else:
         note = {"id": act["id"], "text": text, "original": original, "source": act["payload"]["source"], "extracted": extracted,
-                "created_at": act["created_at"]}
+                "created_at": act["created_at"], "local_date": local_today().isoformat()}
         if ix.AKTA.live and extracted.get("company"):
             t1, ix.AKTA.error = time.time(), None
             try:  # enrichment must never stop a note from saving
@@ -524,15 +622,20 @@ def api_note_save(user):
         try:
             store.put(f"notes/{user['username']}/{act['id']}.json", note)
             act["status"] = "done"
+            with contextlib.suppress(Exception):
+                index_add(user["username"], note)
             act["akta"] = note.get("akta")
         except Exception as e:
             act["status"], act["reason"] = "failed", scrub(f"Could not save: {e}")[:180]
         if act["status"] == "done" and ix.ROUNDTABLE.live:
             act["roundtable"] = False
+            t2, rid = time.time(), None
+            title = describe_rec(extracted) if (extracted.get("founder") or extracted.get("company")) else "Note"
             with contextlib.suppress(Exception):
-                title = describe_rec(extracted) if (extracted.get("founder") or extracted.get("company")) else "Note"
-                act["roundtable"] = bool(ix.ROUNDTABLE.save_note(f"Last Touch · {title}", note_markdown(user, note),
-                                                                 f"lt-{user['username']}-{act['id']}"))
+                rid = ix.ROUNDTABLE.save_note(f"Last Touch · {title}", note_markdown(user, note), f"lt-{user['username']}-{act['id']}")
+            act["roundtable"] = bool(rid)
+            trace_tool(user, "roundtable.save_note", title, str(rid or ix.ROUNDTABLE.error or "failed")[:300], t2,
+                       "success" if rid else "error")
     if act.get("review") and act["review"]["decision"] == "unknown" and act["status"] == "done":
         act["reason"] = f"Saved. PRISM could not decide ({act['review']['reason']})."
     log_action(user, act)
@@ -583,32 +686,69 @@ def set_password(user: dict, pw: str):
     user["pw_ver"] = user.get("pw_ver", 0) + 1
 
 
-def claim_attempt(u: str) -> int:
-    """Reserve this username's one password attempt for the next 10 seconds. Returns 0 if reserved, else seconds to wait.
+TRIES_PER_MINUTE = 6  # per account, across all devices
 
-    The reservation is a blob created with overwrite=False, so even many requests sent at once get one attempt."""
-    t = time.time()
-    window = int(t // ATTEMPT_SECONDS)
-    prev = store.get(f"attempts/{u}/{window - 1}.json")
-    if prev and t - prev.get("t", 0) < ATTEMPT_SECONDS:
-        return max(1, math.ceil(ATTEMPT_SECONDS - (t - prev["t"])))
+
+def client_key() -> str:
+    """Which device is trying (hashed IP; Vercel puts the caller's address in x-real-ip / x-forwarded-for)."""
+    ip = request.headers.get("x-real-ip") or request.headers.get("x-forwarded-for", "").split(",")[0].strip() or request.remote_addr or "?"
+    return hashlib.sha256(("lt-ip:" + ip).encode()).hexdigest()[:16]
+
+
+def _reserve(path: str, t: float) -> bool:
+    """Create the reservation blob; a leftover one older than ATTEMPT_SECONDS (its request died) is replaced."""
     try:
-        store.put(f"attempts/{u}/{window}.json", {"t": t}, overwrite=False)
+        store.put(path, {"t": t}, overwrite=False)
+        return True
     except store.Exists:
-        cur = store.get(f"attempts/{u}/{window}.json") or {"t": t}
+        cur = store.get(path) or {}
+        if t - cur.get("t", 0) < ATTEMPT_SECONDS:
+            return False
+        store.delete(path)
+        try:
+            store.put(path, {"t": t}, overwrite=False)
+            return True
+        except store.Exists:
+            return False
+
+
+def claim_attempt(u: str, slot: str, per_account: bool = True) -> int:
+    """Reserve one password try for this username from this device (or session) for ATTEMPT_SECONDS, and, for sign-in,
+    one of the account's TRIES_PER_MINUTE. Returns 0 if reserved, else seconds to wait. Reservations are blobs created
+    with overwrite=False, so many requests sent at once still get one try, and a stranger's tries never use up the
+    owner's device slot."""
+    t = time.time()
+    path = f"attempts/{u}/{slot}.json"
+    if not _reserve(path, t):
+        cur = store.get(path) or {"t": t}
         return max(1, math.ceil(ATTEMPT_SECONDS - (t - cur.get("t", t))))
-    g.attempt = f"attempts/{u}/{window}.json"
+    g.attempt = path
+    if per_account:
+        minute = int(t // 60)
+        for k in range(TRIES_PER_MINUTE):
+            try:
+                store.put(f"attempts/{u}/m{minute}-{k}.json", {"t": t}, overwrite=False)
+                return 0
+            except store.Exists:
+                continue
+        store.delete(path)
+        g.attempt = None
+        return max(1, 60 - int(t % 60))
     return 0
 
 
 def finish_attempt(started: float):
-    """Make every attempt take ATTEMPT_SECONDS, right or wrong, then drop the reservation (its window is over)."""
+    """Make every attempt take ATTEMPT_SECONDS, right or wrong, then drop this try's reservation and old minute slots."""
     time.sleep(max(0.0, ATTEMPT_SECONDS - (time.time() - started)))
-    if g.get("attempt"):
-        try:
-            store.delete(g.attempt)
-        except Exception:
-            pass
+    path = g.get("attempt")
+    if path:
+        with contextlib.suppress(Exception):
+            store.delete(path)
+            u, minute = path.split("/")[1], int(time.time() // 60)
+            for p in store.list_paths(f"attempts/{u}/m"):
+                m = re.match(r".*/m(\d+)-\d+\.json$", p)
+                if m and int(m.group(1)) < minute - 1:
+                    store.delete(p)
 
 
 def too_soon(wait: int):
@@ -641,7 +781,7 @@ def api_signin():
     u, pw = norm(b.get("username")), str(b.get("password") or "")
     if not USER_RE.match(u):
         return jsonify({"error": "Wrong username or password."}), 403
-    wait = claim_attempt(u)
+    wait = claim_attempt(u, client_key())
     if wait:
         return too_soon(wait)
     started = time.time()
@@ -667,7 +807,8 @@ def api_password(user):
     pw = str(b.get("new") or "")
     if password_problem(pw):
         return jsonify({"error": password_problem(pw)}), 400
-    wait = claim_attempt(user["username"])
+    # Keyed to this signed-in session, so strangers' sign-in tries never block the owner from changing the password.
+    wait = claim_attempt(user["username"], "s-" + hashlib.sha256(chat_sid(user).encode()).hexdigest()[:16], per_account=False)
     if wait:
         return too_soon(wait)
     started = time.time()
@@ -676,6 +817,7 @@ def api_password(user):
             return jsonify({"error": "Your current password is wrong."}), 403
         set_password(user, pw)
         save_user(user)
+        trace_tool(user, "change_password", "(hidden)", "changed", started)
         start_session(user)  # keep this device signed in; every other device is signed out
         return jsonify({"ok": True})
     finally:
@@ -684,7 +826,8 @@ def api_password(user):
 
 @app.post("/api/signout")
 def api_signout():
-    user, sid = current(), session.get("sid")
+    user = current()
+    sid = chat_sid(user) if user else None
     if user and sid and traced(user):
         name, aid = agent_of(user)
         ix.TRACER.end_session(sid, aid, name)
@@ -695,12 +838,6 @@ def api_signout():
 @app.get("/api/me")
 def api_me():
     user = current()
-    if user:  # each page load starts a new chat, so it gets its own PRISM session
-        old = session.get("sid")
-        if old and traced(user):
-            name, aid = agent_of(user)
-            ix.TRACER.end_session(old, aid, name)
-        session["sid"] = f"lt-{user['username']}-{secrets.token_hex(6)}"
     return jsonify({"user": public(user) if user else None})
 
 
@@ -772,16 +909,25 @@ def hard_no(profile: dict, rec: dict) -> str | None:
 
 
 AKTA_PAID_PER_DAY = int(env("AKTA_PAID_PER_DAY", default="30") or 30)
+AKTA_PAID_FIRM_PER_DAY = int(env("AKTA_PAID_FIRM_PER_DAY", default="300") or 300)
+
+
+def _take_slot(prefix: str, cap: int) -> bool:
+    """Claim one of `cap` numbered slots (blobs created with overwrite=False), so parallel calls can't overshoot."""
+    used = len(store.list_paths(prefix))
+    for n in range(used, cap):
+        try:
+            store.put(f"{prefix}{n}.json", {"t": time.time()}, overwrite=False)
+            return True
+        except store.Exists:
+            continue
+    return False
 
 
 def paid_ok(user: dict) -> bool:
-    """Each person gets AKTA_PAID_PER_DAY paid akta.pro calls a day, so one account can't spend the firm's credits."""
-    k = f"usage/{user['username']}/{local_today().isoformat()}.json"
-    n = (store.get(k) or {}).get("akta_paid", 0)
-    if n >= AKTA_PAID_PER_DAY:
-        return False
-    store.put(k, {"akta_paid": n + 1})
-    return True
+    """Paid akta.pro calls per person and for the whole firm per day (server's UTC date: the browser can't reset it)."""
+    day = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    return _take_slot(f"usage/firm/{day}/", AKTA_PAID_FIRM_PER_DAY) and _take_slot(f"usage/{user['username']}/{day}/", AKTA_PAID_PER_DAY)
 
 
 def akta_line(ak: dict | None) -> str | None:
@@ -824,7 +970,7 @@ def api_founders(user):
             row.update(sector=facts.get("sector"), stage=facts.get("stage"), traction=engine.metrics_line(facts.get("metrics")),
                        filled_from=facts["filled_from"])
             row["raise"] = engine.money(facts.get("raising_usd"))
-            s = engine.score_member({**facts, "warm_intro": bool(row["known"])}, member)
+            s = engine.score_member({**facts, "warm_intro": any(h.get("sure") for h in row["known"])}, member)
             top = sorted(((k, v) for k, v in s["parts"].items() if v), key=lambda kv: -kv[1])[:2]
             no = hard_no(profile, r)
             row.update(score=s["score"], verdict=(no if no else "Outside your thesis" if s["features"]["thesis"] == 0 else
@@ -856,7 +1002,7 @@ def api_source(user):
     if not ix.AKTA.use_paid:
         return jsonify({"error": "akta", "message": "Sourcing uses akta.pro List Generation, which is turned off (AKTA_USE_PAID=0)."}), 409
     if not paid_ok(user):
-        return jsonify({"error": "akta", "message": f"You've used today's {AKTA_PAID_PER_DAY} akta.pro sourcing calls. "
+        return jsonify({"error": "akta", "message": "Today's akta.pro sourcing limit is used up (per person or for the firm). "
                                                     "Try again tomorrow."}), 429
     rows = ix.AKTA.companies_like(query, 10)
     mine = {k for r in founders_from(notes_of(user["username"])) for k in (_key(r.get("company")), _key(r.get("founder"))) if k}
@@ -986,7 +1132,8 @@ PAGE = (Path(__file__).parent / "page.html").read_text()
 
 @app.get("/")
 def index():
-    data = {"icons": ICONS, "interview": INTERVIEW, "prism": guard.live(), "llm": ix.LLM_CLIENT.live, "akta": ix.AKTA.live,
+    data = {"icons": ICONS, "interview": INTERVIEW, "prism": guard.live(),
+            "prism_error": ix.TRACER.error if ix.TRACER.key and not guard.live() else None, "llm": ix.LLM_CLIENT.live, "akta": ix.AKTA.live,
             "store": store.mode()}
     blob = json.dumps(data).replace("</", "<\\/")
     return PAGE.replace("__DATA__", blob)

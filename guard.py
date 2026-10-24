@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 
 from env import scrub
@@ -26,16 +27,19 @@ SECRET_RES = [
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "an AWS key"),
     (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{16,}"), "a bearer token"),
     (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"), "a token"),
-    (re.compile(r"\b(?:password|passcode|passwd|pwd|pin code|pin)\s*(?:is|:|=|-)?\s*(?:is\s+)?['\"]?(?=\S*[\d\W])\S{4,}", re.I), "a password"),
+    # "password: hunter22", "pin is 4455", "pw = x9!k"; not "Pinecone", "pin down" or "password reset".
+    (re.compile(r"\b(?:password|passcode|passwd|pwd|pw|pin code|pin)\b\s*(?::|=|\bis\b)\s*['\"]?(?=[^\s'\"]*(?:\d|_|[^\w\s'\"]))[^\s'\"]{3,}['\"]?", re.I), "a password"),
 ]
-CARD_RE = re.compile(r"(?<![\d+])(?:\d[ -]?){12,18}\d(?!\d)")
+CARD_RE = re.compile(r"(?<![\d+])[2-6](?:[ -]?\d){12,18}(?!\d)")  # payment cards start with 2-6
 MAX_NOTE = 20000
 # PRISM scores many things (task completion, efficiency, reliability...). Only guardrail / policy / safety results, or an
 # explicit block decision, may stop a note; a low quality score must never block it.
-SAFETY = re.compile(r"guardrail|polic|safety|unsafe|harm|toxic|pii|privacy|secret|jailbreak|injection|abuse|violen|hate|"
-                    r"sexual|security|compliance|moderation", re.I)
+SAFETY = re.compile(r"(?:^|_|\b)(?:guardrails?|polic(?:y|ies)|safety|safe|unsafe|harm(?:ful)?|toxic(?:ity)?|pii|privacy|secrets?|"
+                    r"jailbreak|injection|abuse|violence|violent|hate|sexual|security|compliance|moderation|content_filter)"
+                    r"(?:$|_|\b)", re.I)
 BLOCK_WORDS = {"block", "blocked", "deny", "denied", "reject", "rejected", "unsafe", "disallow", "disallowed"}
-FAIL = {"fail", "failed", "flagged", "violation", "high", "critical", "non_compliant", "noncompliant"} | BLOCK_WORDS
+FAIL = {"fail", "failed", "flagged", "violation", "violated", "high", "critical", "severe", "non_compliant", "noncompliant",
+        "harmful", "triggered", "detected"} | BLOCK_WORDS
 PASS = {"pass", "passed", "safe", "approved", "approve", "allow", "allowed", "compliant", "low", "none", "ok"}
 PENDING = {"pending", "queued", "running", "processing", "in_progress", "evaluating"}
 
@@ -87,25 +91,26 @@ def _decide(ev) -> tuple[str, str]:
             for k, v in x.items():
                 walk(v, path + (str(k).lower(),))
         elif isinstance(x, list):
-            if x and (key in ("violations", "guardrail_violations", "policy_violations", "triggered_guardrails")
-                      or (safety and key in ("flags", "issues", "triggered", "failures"))):
+            if x and (key in ("guardrail_violations", "policy_violations", "triggered_guardrails", "safety_violations")
+                      or (safety and key in ("violations", "flags", "issues", "triggered", "failures", "detections"))):
                 found.append(("block", f"{where}: {json.dumps(x, default=str)[:160]}"))
-            for i, v in enumerate(x):
+            for v in x:
                 walk(v, path)
         elif isinstance(x, bool):
             if not safety:
                 return
-            if key in ("passed", "pass", "safe", "approved", "allowed", "compliant"):
+            if key in ("passed", "pass", "safe", "is_safe", "approved", "allowed", "compliant") or SAFETY.fullmatch(key or "x"):
                 found.append(("allow" if x else "block", f"{where}={x}"))
-            elif key in ("blocked", "flagged", "triggered", "unsafe", "violation", "is_violation"):
+            elif key in ("blocked", "block", "flagged", "triggered", "detected", "unsafe", "violation", "is_violation", "violated"):
                 found.append(("block" if x else "allow", f"{where}={x}"))
         elif isinstance(x, str):
-            v = x.strip().lower()
-            if key in ("decision", "verdict", "action") and v in BLOCK_WORDS:
+            v = re.sub(r"[\s-]+", "_", x.strip().lower())
+            if key in ("decision", "verdict", "action") and v in BLOCK_WORDS and (safety or len(path) <= 2):
                 found.append(("block", f"{where}={v}"))
-            elif key in ("status", "evaluation_status", "state") and v in PENDING and len(path) <= 2:
+            elif key in ("status", "evaluation_status", "state") and v in PENDING:
                 found.append(("pending", f"{where}={v}"))
-            elif safety and key in ("status", "verdict", "result", "decision", "outcome", "risk", "risk_level", "severity", "label"):
+            elif safety and (key in ("status", "verdict", "result", "decision", "outcome", "risk", "risk_level", "severity", "label")
+                             or SAFETY.fullmatch(key or "x")):
                 if v in FAIL:
                     found.append(("block", f"{where}={v}"))
                 elif v in PASS:
@@ -119,41 +124,64 @@ def _decide(ev) -> tuple[str, str]:
     return "unknown", "no guardrail or safety result in PRISM's evaluation"
 
 
-def review(agent: str, agent_id: str, session_id: str, action: dict, wait_s: float = 8.0) -> dict:
-    """Ask PRISM whether the agent may take this action."""
+def _bounded(fn, seconds: float):
+    """Run one PRISM call, but give up after `seconds` (the call keeps running in the background and is ignored)."""
+    box: dict = {}
+
+    def run():
+        try:
+            box["v"] = fn()
+        except Exception as e:
+            box["e"] = e
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(max(0.0, seconds))
+    if t.is_alive():
+        raise TimeoutError("PRISM didn't answer in time")
+    if "e" in box:
+        raise box["e"]
+    return box.get("v")
+
+
+def review(agent: str, agent_id: str, session_id: str, action: dict, budget: float = 8.0) -> dict:
+    """Ask PRISM whether the agent may take this action, within one overall time budget."""
     pt = TRACER.pt
     if not pt:
         return {"decision": "unknown", "reason": "PRISM is not configured"}
+    deadline = time.time() + budget
+    p = action["payload"]
     steps = [
         {"step_type": "reasoning", "label": "Proposed write", "status": "success",
          "input_summary": f"{agent} wants to: {action['summary']}",
          "output_summary": "Waiting for PRISM's review before writing to the shared firm memory. Reads are allowed."},
+        # The whole note, not just its start, so nothing is saved unreviewed.
         {"step_type": "tool_call", "tool_name": action["type"], "label": action["summary"][:120], "status": "success",
-         "input_summary": json.dumps(action["payload"], default=str)[:24000]},  # the whole note, not just its start
+         "input_summary": str(p.get("text") or "")[:MAX_NOTE],
+         "output_summary": json.dumps({k: v for k, v in p.items() if k != "text"}, ensure_ascii=False, default=str)[:4000]},
     ]
     try:
-        res = pt.submit_trajectory(steps, agent_name=agent, agent_id=agent_id, conversation_id=session_id,
-                                   request_id=action["id"], final_status="success")
+        res = _bounded(lambda: pt.submit_trajectory(steps, agent_name=agent, agent_id=agent_id, conversation_id=session_id,
+                                                    request_id=action["id"], final_status="success"), deadline - time.time())
     except Exception as e:
         return {"decision": "unknown", "reason": scrub(f"PRISM error: {e}")[:140]}
     tid = (res or {}).get("id") or (res or {}).get("trajectory_id")
     if not tid:
         return {"decision": "unknown", "reason": "PRISM did not accept the review request"}
-    deadline = time.time() + wait_s
-    decision, why = "unknown", "PRISM did not answer in time"
-    last = None
-    while time.time() < deadline:
+    decision, why, last = "unknown", "PRISM did not answer in time", None
+    while time.time() < deadline - 0.2:
         try:
-            last = pt.get_trajectory_evaluation(tid)
+            last = _bounded(lambda: pt.get_trajectory_evaluation(tid), deadline - time.time())
             decision, why = _decide(last)
         except Exception as e:
             decision, why = "unknown", scrub(f"PRISM error: {e}")[:140]
+            break
         if decision in ("allow", "block"):
             break
-        status = str((last or {}).get("status") or (last or {}).get("evaluation_status") or "").lower() if isinstance(last, dict) else ""
-        if status in ("completed", "complete", "done", "finished", "failed", "error", "success", "succeeded"):
-            break  # PRISM has finished; polling again won't change its answer
-        time.sleep(1.5)
+        status = str(last.get("status") or last.get("evaluation_status") or "").lower() if isinstance(last, dict) else ""
+        if decision != "pending" and status in ("completed", "complete", "done", "finished", "failed", "error", "success", "succeeded"):
+            break  # PRISM has finished and nothing is still pending; polling again won't change its answer
+        time.sleep(min(1.5, max(0.0, deadline - time.time() - 0.2)))
     if decision == "pending":
         decision, why = "unknown", "PRISM is still evaluating"
     return {"decision": decision, "reason": why, "trajectory_id": tid, "raw": scrub(json.dumps(last, default=str))[:2000] if last else None}

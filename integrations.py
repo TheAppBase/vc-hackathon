@@ -167,14 +167,14 @@ class LLM:
         t0 = time.time()
         try:
             try:
-                r = self.client.chat.completions.create(model=model, messages=messages, temperature=0.2, max_tokens=max_tokens)
+                r = self._create(model, messages, max_tokens, fast)
             except Exception as e:
                 # A configured model that doesn't exist: fall back to the default once.
                 default = self.DEFAULT_FAST_MODEL if fast else self.DEFAULT_MODEL
                 if model == default or "model" not in str(e).lower():
                     raise
                 model = default
-                r = self.client.chat.completions.create(model=model, messages=messages, temperature=0.2, max_tokens=max_tokens)
+                r = self._create(model, messages, max_tokens, fast)
         except Exception as e:
             self.error = scrub(f"Nicrron ({model}) failed: {e}")[:240]
             if trace:
@@ -187,6 +187,12 @@ class LLM:
             TRACER.llm(model, messages, out, int((time.time() - t0) * 1000), getattr(r, "usage", None), agent_name,
                        session_id, agent_id)
         return out
+
+    def _create(self, model: str, messages: list, max_tokens: int, fast: bool):
+        # Reading a request must be quick (8s, no retry) so a slow AI falls back to phrase matching fast; writing up a
+        # note may take longer (30s, one retry).
+        client = self.client.with_options(timeout=8.0, max_retries=0) if fast else self.client.with_options(timeout=30.0, max_retries=1)
+        return client.chat.completions.create(model=model, messages=messages, temperature=0.2, max_tokens=max_tokens)
 
     def json(self, system: str, user: str, agent_name: str, session_id=None, trace: bool = True, agent_id=None,
              max_tokens: int = 700, fast: bool = False) -> dict | None:
@@ -274,9 +280,11 @@ class Akta:
         self.last_status = r.status_code
         if r.status_code >= 400:
             try:
-                detail = r.json().get("detail") or r.json().get("message") or r.text
+                j = r.json()
+                detail = (j.get("detail") or j.get("message")) if isinstance(j, dict) else j
             except ValueError:
-                detail = r.text
+                detail = None
+            detail = detail or r.text
             hint = {401: "check AKTA_API_KEY", 403: "your akta.pro plan doesn't include this", 429: "rate limited, try again shortly",
                     422: "akta.pro rejected the request"}.get(r.status_code, "")
             self.error = scrub(f"akta.pro {path} {r.status_code}: {str(detail)[:140]}" + (f" ({hint})" if hint else ""))[:220]

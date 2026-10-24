@@ -46,6 +46,7 @@ elif env("BLOB_STORE_ID"):
 else:
     KIND, STORE_ID = "local", ""
 LIVE = KIND != "local"
+_http = httpx.Client(timeout=15)
 HOST = f"https://{STORE_ID.lower()}.private.blob.vercel-storage.com"
 
 
@@ -89,9 +90,6 @@ def get(path: str):
     return _fetch(path, _headers())
 
 
-_http = httpx.Client(timeout=15)
-
-
 def _fetch(path: str, headers: dict):
     r = _http.get(f"{HOST}/{quote(path, safe='/')}", params={"cache": "0"}, headers=headers)
     if r.status_code == 404:
@@ -127,7 +125,16 @@ def put(path: str, data, overwrite: bool = True):
     r.raise_for_status()
 
 
-def list_paths(prefix: str) -> list[str]:
+def list_many(prefixes: list[str]) -> list[list[str]]:
+    """list_paths for several prefixes in parallel."""
+    if not LIVE or len(prefixes) < 2:
+        return [list_paths(p) for p in prefixes]
+    headers = _headers()
+    with ThreadPoolExecutor(8) as pool:
+        return list(pool.map(lambda p: list_paths(p, headers), prefixes))
+
+
+def list_paths(prefix: str, headers: dict | None = None) -> list[str]:
     if not LIVE:
         base = LOCAL / prefix
         root = base if base.is_dir() else base.parent
@@ -137,7 +144,7 @@ def list_paths(prefix: str) -> list[str]:
     out, cursor = [], None
     while True:
         params = {"prefix": prefix, "limit": "1000", **({"cursor": cursor} if cursor else {})}
-        r = httpx.get(API, params=params, headers=_headers(), timeout=20)
+        r = _http.get(API, params=params, headers=headers or _headers(), timeout=20)
         r.raise_for_status()
         j = r.json()
         out += [b["pathname"] for b in j.get("blobs", [])]
