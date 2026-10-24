@@ -142,7 +142,7 @@ a{color:inherit;text-decoration:none}.ic{flex:none;vertical-align:-3px}
 -webkit-backdrop-filter:blur(28px) saturate(180%);backdrop-filter:blur(28px) saturate(180%)}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--warm);box-shadow:0 0 0 2px rgba(255,149,0,.18)}
 .dot.live{background:var(--ok);box-shadow:0 0 0 2px rgba(52,199,89,.2)}
-.page{max-width:1240px;margin:0 auto;padding:26px 24px 40px}
+.page{max-width:1000px;margin:0 auto;padding:72px 24px 24px}
 .hero{padding:28px 6px 22px;display:grid;grid-template-columns:1fr auto;gap:20px;align-items:end}
 .hero h1{font-size:40px;line-height:1.05;letter-spacing:-.025em;margin:0 0 6px;font-weight:700}
 .hero p{margin:0;color:var(--muted);font-size:16px}
@@ -193,7 +193,10 @@ code{font:12px ui-monospace,"SF Mono",Menlo,monospace}
 .views{display:flex;flex-wrap:wrap;gap:6px}.views a{padding:6px 12px;border-radius:999px;font-size:13px;background:var(--glass);border:1px solid var(--edge)}
 .views a.on{background:linear-gradient(180deg,#3d9bff,#0a84ff);color:#fff;border-color:transparent}
 .icon-only{padding:10px;width:40px;height:40px;justify-content:center}
-.chat{display:flex;flex-direction:column;gap:2px}.chat .msg{border-top:0;padding:6px 0}
+.chatpage{max-width:none;padding:0;height:100vh;height:100dvh}
+.chatwrap{height:100%;display:flex;flex-direction:column}
+.chat{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:2px;padding:72px max(24px,calc(50% - 460px)) 16px}
+.chatwrap .composer{position:static;margin:0 max(16px,calc(50% - 470px)) 18px}.chat .msg{border-top:0;padding:6px 0}
 .bubble{background:var(--glass-strong);border:1px solid var(--edge);border-radius:18px 18px 18px 6px;padding:9px 14px;max-width:760px}
 .msg.me{flex-direction:row-reverse}.msg.me .bubble{background:linear-gradient(180deg,#3d9bff,#0a84ff);color:#fff;border-color:transparent;border-radius:18px 18px 6px 18px}
 .msg.me .time{color:rgba(255,255,255,.75)}.msg.sys{justify-content:center}.msg.sys span{font-size:12.5px;color:var(--muted);padding:4px 12px;border-radius:999px;background:var(--glass-strong)}
@@ -201,7 +204,9 @@ code{font:12px ui-monospace,"SF Mono",Menlo,monospace}
 -webkit-backdrop-filter:blur(24px);backdrop-filter:blur(24px);box-shadow:var(--shadow)}
 .composer input,.add input{flex:1;min-width:0;border:0;background:transparent;font:inherit;color:var(--text);padding:8px 14px;outline:none}
 .send{width:38px;height:38px;border-radius:50%;border:0;display:grid;place-items:center;color:#fff;cursor:pointer;background:linear-gradient(180deg,#3d9bff,#0a84ff)}
-.sheet{width:min(440px,calc(100vw - 32px));padding:22px 24px;color:var(--text);background:var(--glass-strong)}
+.sheet{width:min(400px,100vw);height:100vh;height:100dvh;max-height:none;margin:0 0 0 auto;padding:22px 24px;color:var(--text);
+background:var(--glass-strong);border-radius:22px 0 0 22px;border-right:0;overflow-y:auto}
+.sheet[open]{animation:slidein .22s ease-out}@keyframes slidein{from{transform:translateX(40px);opacity:0}to{transform:none;opacity:1}}
 .sheet::backdrop{background:rgba(10,20,22,.25);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
 .sheet-head{display:flex;justify-content:space-between;align-items:center}.sheet h2{margin:0;font-size:20px}
 .sheet h3{font-size:13px;color:var(--muted);font-weight:600;margin:18px 0 4px}
@@ -210,7 +215,7 @@ code{font:12px ui-monospace,"SF Mono",Menlo,monospace}
 .hint{color:var(--muted);font-size:12.5px;margin:10px 2px 0}.hint.err{color:var(--hot)}
 button.btn{cursor:pointer;font:inherit;font-weight:600;font-size:14px;color:inherit}
 @media (max-width:980px){.metrics{grid-template-columns:repeat(3,1fr);row-gap:12px}.metric:nth-child(4){border-left:0}.cols,.split{grid-template-columns:1fr}.hero{grid-template-columns:1fr}.actions{justify-content:flex-start}}
-@media (max-width:620px){.page{padding:16px 16px 32px}.hero{padding:22px 20px}.hero h1{font-size:32px}.hero{padding:18px 4px 16px}.section{padding:18px 16px}
+@media (max-width:620px){.page{padding:64px 12px 16px}.hero{padding:22px 20px}.hero h1{font-size:32px}.hero{padding:18px 4px 16px}.section{padding:18px 16px}
 .metric .v{font-size:22px}.corner{top:12px;right:12px}}
 """
 
@@ -226,6 +231,7 @@ JS = """
   const save = () => { try { localStorage.setItem('lt_people', JSON.stringify(people)); } catch (e) {} };
   const initials = (u) => u.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase();
   const chat = $('#chat');
+  if (chat) chat.scrollTop = chat.scrollHeight;
   function sys(text){ if (!chat) return; chat.insertAdjacentHTML('beforeend', `<div class="msg sys"><span>${esc(text)}</span></div>`); }
   function renderPeople(){
     $('#people').innerHTML = people.map((u, i) => `<li><span class="avatar" style="--hue:#ff9f0a;width:32px;height:32px;font-size:12px">${esc(initials(u))}</span>`
@@ -340,7 +346,7 @@ def tab_channel(state, members, params):
     composer = (f"<form class='composer' id='composer' data-q='{e(urlencode({k: v for k, v in params.items() if k in ('live', 'closed', 'signals') and v}))}'>"
                 f"<input id='chat-input' autocomplete='off' placeholder='Ask the agents: who is hot, Tracewell, search Langfuse'>"
                 f"<button class='send' aria-label='Send'>{icon('up', 18)}</button></form>")
-    return section("channel", "Firm chat", "", f"<div class='chat' id='chat'>{feed}</div>{composer}")
+    return f"<section class='chatwrap'><div class='chat' id='chat'>{feed}</div>{composer}</section>"
 
 
 def akta_search(term: str) -> str:
@@ -360,6 +366,15 @@ def answer(text: str, state: dict) -> tuple[str, str, str]:
     q = (text or "").lower()
     members = state["members"]
     tools = ""
+    for mid, m in members.items():
+        if mid != "ava" and first(m["name"]).lower() in q:
+            tools += toolcard("agent", "Ava's agent", "get_open_tasks()", f"{reply.split(':')[0]}", f"{first(m['name'])}'s agent")
+    for key in ("hot", "parked", "warm", "pass"):
+        if key in q:
+            tools += toolcard("agent", "Ava's agent", f"query_firm_memory(status=\"{key}\")", reply.split(": ", 1)[-1][:120], "Roundtable firm memory")
+            break
+    if any(w in q for w in ("drop", "spam", "junk")):
+        tools += toolcard("agent", "Ava's agent", "query_triage(decision=\"drop\")", reply.split(":")[0], "Roundtable firm memory")
     for n in state["notes"]:
         if n.get("status") and (n.get("company") or "").lower() in q and n.get("company"):
             tools = akta_card(n) + score_card(n, members)
@@ -478,7 +493,8 @@ def tab_memory(state, notes):
 
 
 def section(name, title, sub, body):
-    return f"<section class='glass section'><h2>{e(title)}</h2>{body}</section>"
+    heading = f"<h2>{e(title)}</h2>" if title else ""
+    return f"<section class='glass section'>{heading}{body}</section>"
 
 
 @app.route("/")
@@ -491,36 +507,27 @@ def index():
 
     notes, members = state["notes"], state["members"]
     leads = [n for n in notes if n.get("status")]
-    count = lambda s: sum(1 for n in leads if n["status"] == s)  # noqa: E731
-    dropped = sum(1 for r in state["triage"] if r["triage"] == "drop")
 
-    live_btn = ""
+    live = ""
     if ix.LLM_CLIENT.live:
-        live_btn = (f"<a class='btn' href='{link(params, live=0 if params['live'] else 1)}'>{icon('spark', 16)}"
-                    f"Live AI: {'on' if params['live'] else 'off'}</a>")
-    hero = (f"<header class='hero'><div><h1>Last Touch</h1><p>One agent per person. One shared firm memory.</p></div>"
-            f"<div class='actions'>{live_btn}<a class='btn primary' href='{link({'live': params['live'], 'tab': tab})}'>"
-            f"{icon('play', 15)}Run agents</a></div></header>"
-            f"<button class='btn icon-only corner' id='open-settings' aria-label='Settings'>{icon('settings', 17)}</button>")
+        live = (f"<h3>Live AI</h3><a class='btn' href='{link(params, live=0 if params['live'] else 1)}'>{icon('spark', 16)}"
+                f"Live AI extraction: {'on' if params['live'] else 'off'}</a>")
+    corner = f"<button class='btn icon-only corner' id='open-settings' aria-label='Settings'>{icon('settings', 17)}</button>"
     team = "".join(f"<li>{avatar(m, 32)}<span><b>{e(m['name'])}</b><small>{e(m['role'])}</small></span></li>" for m in members.values())
     settings = (f"<dialog id='settings' class='glass sheet'><div class='sheet-head'><h2>Settings</h2>"
                 f"<button class='btn icon-only' id='close-settings' aria-label='Close'>{icon('x', 16)}</button></div>"
-                f"<h3>Views</h3><nav class='views'>{views_nav}</nav><h3>Team</h3><ul class='plain team'>{team}</ul><ul class='plain team' id='people'></ul>"
+                f"<h3>Views</h3><nav class='views'>{views_nav}</nav>{live}<h3>Team</h3><ul class='plain team'>{team}</ul><ul class='plain team' id='people'></ul>"
                 f"<h3>Add a person</h3><form id='add-person' class='add'><input id='username' autocomplete='off' placeholder='Username, e.g. @dana'>"
                 f"<button class='btn primary'>{icon('userplus', 16)}Add</button></form>"
                 f"<p class='hint' id='add-hint'>Each person gets their own agent in the firm chat. Saved in this browser for the demo.</p></dialog>")
-
-    metrics = [("Inbound", len(state["triage"])), ("Dropped", dropped), ("Hot", count("hot")),
-               ("Parked", count("park")), ("Warm", count("warm")), ("Pass", count("pass"))]
-    m = "".join(f"<div class='metric'><div class='v'>{v}</div><div class='k'>{k}</div></div>" for k, v in metrics)
 
     views = {"today": lambda: tab_today(state, leads, members), "channel": lambda: tab_channel(state, members, params),
              "triage": lambda: tab_triage(state, leads, members), "briefs": lambda: tab_briefs(state, leads, members, params),
              "watch": lambda: tab_watch(state, leads, params), "memory": lambda: tab_memory(state, notes)}
 
     return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<title>Last Touch</title><style>{CSS}</style></head><body><main class='page'>{hero}"
-            f"<div class='glass metrics'>{m}</div>{views[tab]()}</main>{settings}<script>{JS}</script></body></html>")
+            f"<title>Last Touch</title><style>{CSS}</style></head><body>{corner}<main class='page{" chatpage" if tab == "channel" else ""}'>"
+            f"{views[tab]()}</main>{settings}<script>{JS}</script></body></html>")
 
 
 if __name__ == "__main__":
