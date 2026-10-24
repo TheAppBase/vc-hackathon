@@ -1,48 +1,31 @@
-# Last Touch: a firm-wide team of deal agents (Deal Flow hackathon, Track 1)
+# Last Touch (Deal Flow hackathon, Track 1: sourcing)
 
-Every person at the fund gets an agent. The agents share one firm memory and talk to each other, so no great founder is dropped between the inbox, the event and the partner meeting.
+**Vision:** every person at a VC firm gets a personal AI agent. The agent interviews them to learn their domain knowledge, then works the way they do. All the agents share one firm memory and talk to each other, so the firm always knows who is talking to which founder and what happens next.
 
-- **Associate's agent (Ava):** reads inbound (LinkedIn, email, event notes), drops spam, vendor and generic pitches with a reason, and writes a sourced brief.
-- **Partners' agents (Ben "Steady", Cara "Moonshot"):** score every lead against their own thesis. The scores are rules, shown with a breakdown.
-- **Router:** sends each lead to the partner whose thesis fits best. If someone at the firm already met the founder, that person sends the re-intro.
-- **Watcher:** parked founders (for example, "Fund II still raising") resurface when the fund closes or a signal appears.
-- **Follow-up rules:**
-  - Hot: 24h, then a 14-day second touch
-  - Warm: keep-in-touch note, recheck in 60 days
-  - Park: wait for the fund to close or a new signal
-  - Pass: polite decline with a referral
+**Today's MVP (mock data):** one full-screen chat with your personal agent.
+1. **Build your agent.** A quick interview: name, role, sectors and stages, the signal you trust, where you talk to founders, hard no's. Your answers become your agent's scoring weights.
+2. **Source founders.** The agent scans the inbox (14 mock messages), drops spam and vendors, checks each founder on akta.pro (the agents' mini web search), and ranks them with your own criteria. Scoring is the explainable rules engine in `engine.py`.
+3. **Who have I been talking to?** Founder conversations across Gmail, LinkedIn, Google Calendar, WhatsApp and event notes, with next steps and what's overdue.
+4. **15-second note.** Record a quick voice note after a meeting; the agent extracts founder, company and next step and saves it to the firm memory (Roundtable).
+5. **Agents talk to each other.** Before you reach out, your agent asks teammates' agents (visible tool calls) who already knows the founder, e.g. "Ben met Maya 46 days ago and never followed up: Ben re-intros, you take the call."
 
-  Messages are drafts only and are never sent automatically.
+Settings (top-right corner) holds your agent profile, connected platforms, the team's agents and "add a person by username".
 
-## Run (2 minutes)
+## Run
 ```bash
 pip install -r requirements.txt
-cp .env.example .env      # add keys; every key is optional
 flask --app app run      # http://127.0.0.1:5000
 ```
-The original Streamlit UI still works: `pip install -r requirements-streamlit.txt && streamlit run streamlit_app.py`.
-Without keys it runs fully on cached or demo data, and every fallback is labelled in the UI.
+No keys needed: everything runs on mock data in `data/`. Optional keys in `.env.example` (Nicrron, Akta, PRISM, Roundtable).
 
-## Sponsor tools (all four)
-| Tool | Where | What it does |
-|---|---|---|
-| **Nicrron** | `integrations.LLM` | OpenAI-compatible (`https://api.nicrron.ai/v1`). Extracts structured fields from messy messages and polishes drafts. Turn on with the "Live AI" toggle. |
-| **Akta (Wokelo)** | `integrations.Akta` | Company search (is this company real?), industry search, comparable-company lists and industry news for every brief. Also gives the Watcher its signals on parked founders. |
-| **PRISM (Block Convey)** | `integrations.Tracer` | Every LLM call goes through `trace_llm`, and every agent run is submitted as a trajectory (`submit_trajectory`), one per agent per run. |
-| **Roundtable** | `integrations.NotesStore` | The firm memory: one shared note per founder, saved to Roundtable by calling its `save_note` tool over MCP into the `last-touch` folder, updated in place on later runs. Set `ROUNDTABLE_MCP_URL` and `ROUNDTABLE_MCP_TOKEN` to the MCP URL and bearer key of a connection created for this app (never a personal assistant's key). Notes are also mirrored to `runtime/roundtable_outbox/*.md`. |
-
-## Design choices
-- **Rules decide, the AI extracts and writes.** Thesis checks, scores, routing and follow-up timing are plain code, so every verdict has a reason.
-- **Every claim in a brief carries a source tag:** `[m04]` is the founder's message, `[firm memory]` is the note history, `[Akta]` is outside data.
-- **All people, funds and startups in `data/` are fictional.** Akta fixture comps list real companies by name only.
+## Deploy
+Vercel: import the repo; `app.py` exports the Flask `app`, no framework preset needed.
 
 ## Files
-- `app.py`: the Flask UI for Vercel: one full-screen chat with a side settings panel (`streamlit_app.py` is the original multi-view Streamlit UI) (Today's actions, Firm channel, Inbox triage, Briefs, Watchlist, Memory & traces)
-- `engine.py`: agents, rules, routing, follow-up rules, Watcher
-- `integrations.py`: Nicrron, Akta, PRISM, Roundtable, plus a cache
-- `data/`: synthetic inbox (14 messages), firm and partner profiles, firm-memory seed, Akta demo fixtures
+- `app.py`: the MVP (Flask server, `/api/build` scores founders with the interview's weights, single-page chat UI)
+- `engine.py`: triage, scoring, routing and follow-up rules
+- `integrations.py`: Nicrron, Akta, PRISM, Roundtable clients with demo fallbacks
+- `data/`: mock firm, inbox, firm memory, Akta fixtures, interview script and conversations (`mvp.json`)
+- `streamlit_app.py`: the earlier multi-view Streamlit prototype
 
-## Deploy (live link for Devpost)
-Vercel: import the GitHub repo; `app.py` exports the Flask `app`, so no framework preset or build settings are needed.
-Add the keys under Settings → Environment Variables (`NICRRON_API_KEY`, `ROUNDTABLE_MCP_URL`, `ROUNDTABLE_MCP_TOKEN`).
-On Vercel, runtime files go to `/tmp/last-touch`. The demo needs no server state.
+All people, funds and startups in `data/` are fictional. Akta fixture comparables list real companies by name only.
