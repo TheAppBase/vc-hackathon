@@ -14,10 +14,20 @@ from pathlib import Path
 
 import httpx
 
+def env(*names: str, default: str | None = None) -> str | None:
+    """First non-empty environment variable among names, with whitespace trimmed.
+    Keys pasted into a hosting dashboard often carry a trailing newline, which HTTP headers reject."""
+    for name in names:
+        v = (os.getenv(name) or "").strip()
+        if v:
+            return v
+    return default
+
+
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 # Serverless hosts (Vercel) only allow writes under /tmp.
-RUNTIME = Path(os.getenv("LAST_TOUCH_RUNTIME") or ("/tmp/last-touch" if os.getenv("VERCEL") else ROOT / "runtime"))
+RUNTIME = Path(env("LAST_TOUCH_RUNTIME") or ("/tmp/last-touch" if env("VERCEL") else ROOT / "runtime"))
 RUNTIME.mkdir(parents=True, exist_ok=True)
 CACHE_FILE = RUNTIME / "cache.json"
 _lock = threading.Lock()
@@ -65,8 +75,8 @@ class Tracer:
     """PRISM by Block Convey. Logs every LLM call (trace_llm) and every agent run (submit_trajectory)."""
 
     def __init__(self):
-        self.key = os.getenv("PRISMTRACE_API_KEY")
-        self.project = os.getenv("PRISMTRACE_PROJECT_ID")
+        self.key = env("PRISMTRACE_API_KEY", "PRISM_API_KEY")
+        self.project = env("PRISMTRACE_PROJECT_ID", "PRISM_PROJECT_ID")
         self.live = bool(self.key and self.project)
         self.error = None
         self.local: list[dict] = []  # always kept, shown in the UI "Trace" tab
@@ -77,7 +87,7 @@ class Tracer:
 
                 self.pt = PRISMtrace(
                     api_key=self.key,
-                    host=os.getenv("PRISMTRACE_HOST", "https://api.prism.blockconvey.com"),
+                    host=env("PRISMTRACE_HOST", "PRISM_HOST", default="https://api.prism.blockconvey.com"),
                     project_id=self.project,
                 )
             except Exception as e:  # pragma: no cover
@@ -123,9 +133,9 @@ class LLM:
     """Nicrron API: OpenAI-compatible endpoint (https://api.nicrron.ai/v1)."""
 
     def __init__(self):
-        self.key = os.getenv("NICRRON_API_KEY")
-        self.model = os.getenv("NICRRON_MODEL", "nicrron/auto")
-        self.base = os.getenv("NICRRON_BASE_URL", "https://api.nicrron.ai/v1")
+        self.key = env("NICRRON_API_KEY")
+        self.model = env("NICRRON_MODEL", default="nicrron/auto")
+        self.base = env("NICRRON_BASE_URL", default="https://api.nicrron.ai/v1")
         self.live = bool(self.key)
         self.error = None
         self.client = None
@@ -200,10 +210,10 @@ class Akta:
     """akta.pro by Wokelo: company search (free), industry search (free), company lists and news (credits)."""
 
     def __init__(self):
-        self.key = os.getenv("AKTA_API_KEY")
-        self.base = os.getenv("AKTA_BASE_URL", "https://api.akta.pro/api")
+        self.key = env("AKTA_API_KEY")
+        self.base = env("AKTA_BASE_URL", default="https://api.akta.pro/api")
         self.live = bool(self.key)
-        self.use_paid = os.getenv("AKTA_USE_PAID", "1") == "1"
+        self.use_paid = env("AKTA_USE_PAID", default="1") == "1"
         self.error = None
         self.fixtures = json.loads((DATA / "akta_fixtures.json").read_text())
 
@@ -297,9 +307,9 @@ class NotesStore:
         self.outbox.mkdir(exist_ok=True)
         self.ids_path = RUNTIME / "roundtable_ids.json"
         self.ids = json.loads(self.ids_path.read_text()) if self.ids_path.exists() else {}
-        self.url = os.getenv("ROUNDTABLE_MCP_URL")
-        self.token = os.getenv("ROUNDTABLE_MCP_TOKEN")
-        self.folder = os.getenv("ROUNDTABLE_FOLDER", "last-touch")
+        self.url = env("ROUNDTABLE_MCP_URL")
+        self.token = env("ROUNDTABLE_MCP_TOKEN")
+        self.folder = env("ROUNDTABLE_FOLDER", default="last-touch")
         self.live = bool(self.url and self.token)
         self.error = None if self.live or not self.url else "ROUNDTABLE_MCP_TOKEN is missing (the MCP URL needs its bearer key)"
         self.session = None
