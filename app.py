@@ -21,6 +21,8 @@ import threading  # noqa: E402
 from flask import Flask, jsonify, request  # noqa: E402
 
 import engine  # noqa: E402
+import integrations as ix  # noqa: E402
+import notes as nx  # noqa: E402
 
 app = Flask(__name__)
 MVP = engine.load("mvp.json")
@@ -206,6 +208,111 @@ def handoff(state: dict) -> str:
     return ""
 
 
+def note_facts(note: dict) -> list[str]:
+    facts = []
+    if note.get("one_liner"):
+        facts.append(note["one_liner"])
+    if note.get("event"):
+        facts.append(f"Met at {note['event']}")
+    if note.get("stage"):
+        facts.append({"pre-seed": "Pre-seed", "seed": "Seed", "series-a": "Series A", "idea": "Idea stage"}.get(note["stage"], note["stage"]))
+    if note.get("raising_usd"):
+        facts.append(f"Raising {engine.money(note['raising_usd'])}")
+    traction = engine.metrics_line(note.get("metrics"))
+    if traction != "Not stated":
+        facts.append(traction)
+    return facts
+
+
+ACTION = re.compile(r"\bnext steps?\b[\s:,-]*|\b(?:follow up|send|intro(?:duce)?|schedule|set up|loop in|book|email|call)\b", re.I)
+SECTOR_LABEL = {"ai": "AI", "cpg": "CPG", "devtools": "devtools", "fintech": "fintech", "consumer": "consumer"}
+
+
+def tidy_next(nxt: str) -> str:
+    """Browser dictation has no punctuation, so a next step can swallow the whole note. Start it at the last action phrase."""
+    if len(nxt) > 45 or "," in nxt:
+        h = ACTION.search(nxt)
+        if h:
+            cand = nxt[h.end() if h.group(0).lower().startswith("next step") else h.start():].strip(" ,.:;-")
+            if len(cand) >= 6:
+                nxt = cand
+    return nxt[0].upper() + nxt[1:]
+
+
+def due_label(iso: str | None) -> str:
+    if not iso:
+        return "this week"
+    d = dt.date.fromisoformat(iso)
+    return f"{d.strftime('%A')}, {d.strftime('%b')} {d.day}"
+
+
+@app.route("/api/note", methods=["POST"])
+def api_note():
+    """Read a dictated or typed note: who you met, at which company, what's next, and who at the firm already knows them."""
+    body = request.get_json(silent=True)
+    body = body if isinstance(body, dict) else {}
+    text = str(body.get("text") or "").strip()[:2000]
+    if not text:
+        return jsonify({"error": "The note is empty."}), 400
+    today = dt.date.today()
+    ext, how = None, "keyword rules"
+    if ix.LLM_CLIENT.live:
+        got = ix.LLM_CLIENT.json(nx.NOTE_SYSTEM.format(today=today.isoformat(), weekday=today.strftime("%A")), text,
+                                 agent_name="Note taker")
+        if isinstance(got, dict):
+            ext, how = got, "Nicrron"
+    if ext is None:
+        ext = nx.heuristic_note(text, today)
+    note = nx.clean_note(ext)
+
+    # Does anyone at the firm already know this founder? Check firm memory, then route by thesis.
+    state = base_state()
+    members = state["members"]
+    match = None
+    for n in state["notes"]:
+        if not n.get("status"):
+            continue
+        same_founder = note["founder"] and (n.get("founder") or "").lower() == note["founder"].lower()
+        same_company = note["company"] and (n.get("company") or "").lower() == note["company"].lower()
+        if same_founder or same_company:
+            match = n
+            break
+    who = note["founder"] or note["company"] or "them"
+    known = None
+    if match:
+        neutral = {"id": "me", "name": "You", "sectors": [], "stages": [], "weights": WEIGHTS["balanced"]}
+        known = lead_for(match, neutral, members)["known"]
+        if known:
+            known = {**known, "intro": False}
+    if known is None:
+        partner = next((m for m in members.values() if m["weights"] and note["sector"] in m["sectors"]), None)
+        if partner:
+            p = first(partner["name"])
+            known = {"id": partner["id"], "name": p, "intro": True,
+                     "text": f"{p} hasn't met {who} yet, and nobody else at the firm has either. It sounds like {p}'s thesis "
+                             f"({SECTOR_LABEL.get(note['sector'], note['sector'])}), so {p} would like an intro. {p} is free Monday at 10:00 or 2:00. "
+                             f"I'll wait for your approval before anything goes out.",
+                     "next": f"You own the relationship. {p} would like an intro."}
+        else:
+            known = {"id": None, "name": "", "intro": False,
+                     "text": f"Nobody at the firm has met {who} yet, so the relationship is yours.",
+                     "next": "You own the relationship."}
+
+    saved = "local"
+    if ix.NOTES.live:
+        try:
+            ix.NOTES.call("save_note", {"kind": "note", "folder": ix.NOTES.folder, "content": text,
+                                        "title": f"Last Touch note · {note['founder'] or note['company'] or 'untitled'}",
+                                        "request_id": f"lt-note-{abs(hash(text)) % 10**12}"})
+            saved = "roundtable"
+        except Exception as e:  # keep the note in the session; say the save failed
+            ix.NOTES.error = f"Roundtable save_note failed: {e}"
+            saved = "failed"
+    nxt = tidy_next(note["next_step"] or "Follow up this week")
+    return jsonify({"note": note, "how": how, "known": known, "saved": saved, "facts": note_facts(note),
+                    "next": nxt, "due": due_label(note["next_due"])})
+
+
 @app.route("/api/build", methods=["POST"])
 def api_build():
     answers = request.get_json(silent=True)
@@ -342,7 +449,10 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
 .wave{display:flex;gap:3px;justify-content:center;align-items:center;height:28px;margin-bottom:10px}
 .wave i{width:4px;border-radius:2px;background:var(--red);animation:w .9s ease-in-out infinite}
 @keyframes w{0%,100%{height:6px}50%{height:26px}}
-.rec .live{min-height:66px;font-size:14px;color:var(--muted);text-align:left;margin:4px 0 14px}
+.rec textarea{display:block;width:100%;min-height:96px;resize:vertical;margin:4px 0 14px;padding:10px 12px;border-radius:14px;border:1px solid var(--edge);
+background:var(--glass);color:var(--text);font-family:inherit;font-size:14px;line-height:1.5;outline:none;text-align:left}
+.rec-acts{display:flex;gap:8px;justify-content:center}.rec.stopped .wave i{animation:none;height:6px;opacity:.35}
+.rec #rec-label{min-height:19px}
 @media (max-width:620px){.chat{padding:64px 12px 10px}.indent{margin-left:0}.bubble{max-width:88%}.corner{top:10px;right:10px}
 .kv{grid-template-columns:90px 1fr}.bar{grid-template-columns:100px 1fr 30px}.chips{justify-content:flex-start;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}
 .chip{flex:none}.chips.multi{flex-wrap:wrap}.bottom{padding:0 10px 10px}.row{grid-template-columns:auto 1fr}.row .right{grid-column:2;text-align:left}}
@@ -628,7 +738,7 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
     await typing(350);
     say('Here is who at the firm is talking to which founder, and what happens next:');
     const yours = Object.entries(S.memory || {}).map(([company, m]) => `<div class="row">${agentAvatar()}
-      <div><b>${esc(S.profile.first)}</b> · ${esc(m.founder)}, ${esc(company)}<small>${esc(m.next)}</small></div>
+      <div><b>${esc(S.profile.first)}</b> · ${esc([m.founder, company].filter(Boolean).join(', '))}<small>${esc(m.next)}</small></div>
       <div class="right"><span class="pill s-due">You</span><br>From your agent</div></div>`).join('');
     block(`<div class="card rows">${yours}${D.board.map((r) => `<div class="row">${agentAvatar({id: r.who, name: r.name})}
       <div><b>${esc(r.name.split(' ')[0])}</b> · ${esc(r.founder)}, ${esc(r.company)}<small>${esc(r.what)}</small></div>
@@ -645,46 +755,101 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
     say(rows.length ? `${f} has ${rows.length} founders in motion: ${rows.map((r) => `${esc(r.company)} (${esc(r.what.toLowerCase())}, ${esc(r.due)})`).join('; ')}.` : `${f} has no founders in motion right now.`, {id: m.id, name: f});
   }
 
-  // ---------------------------------------------------------------- 15-second note
+  // ---------------------------------------------------------------- 15-second note (real dictation)
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  function recordNote() {
+    // Resolves with the note text, or null if it was cancelled. Dictation fills an editable box live; typing works too.
+    const LIMIT = D.mvp.voice_note.seconds, dlg = $('#rec');
+    dlg.className = 'glass rec';
+    dlg.innerHTML = `<div class="small" id="rec-label">15-second note</div><div class="clock" id="clock"><b id="secs">${LIMIT}</b></div>
+      <div class="wave">${Array.from({length: 18}, (_, i) => `<i style="animation-delay:${(i % 6) * 0.12}s"></i>`).join('')}</div>
+      <textarea id="live" rows="4" aria-label="Your note" placeholder="Say who you met, what they're building and what's next."></textarea>
+      <div class="rec-acts"><button class="btn" id="rec-cancel" type="button">Cancel</button>
+      <button class="btn primary" id="rec-save" type="button" disabled>${ic('check', 14)}Save note</button></div>`;
+    dlg.showModal();
+    const live = $('#live'), saveBtn = $('#rec-save'), label = $('#rec-label');
+    let rec = null, listening = false, committed = '', session = '', elapsed = 0, finish;
+    const result = new Promise((res) => { finish = res; });
+    const refresh = () => { saveBtn.disabled = !live.value.trim(); };
+    function stop(msg) {
+      listening = false;
+      if (rec) { const r = rec; rec = null; try { r.stop(); } catch (e) {} }
+      dlg.classList.add('stopped');
+      if (msg) label.textContent = msg;
+    }
+    const close = (text) => { stop(); dlg.close(); finish(text); };
+    saveBtn.onclick = () => close(live.value.trim());
+    $('#rec-cancel').onclick = () => close(null);
+    dlg.oncancel = (ev) => { ev.preventDefault(); close(null); };
+    live.addEventListener('input', () => { if (listening) stop('Stopped listening so you can edit. Save when ready.'); refresh(); });
+    if (!SR) {
+      stop('Dictation needs Chrome, Edge or Safari. Type your note instead.');
+      live.placeholder = 'Who did you meet, what are they building, and what is next?'; live.focus();
+      return result.then((t) => ({text: t, seconds: 0}));
+    }
+    rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || 'en-US';
+    rec.onresult = (e) => {
+      let fin = '', interim = '';
+      for (let i = 0; i < e.results.length; i++) {
+        if (e.results[i].isFinal) fin += ' ' + e.results[i][0].transcript; else interim += ' ' + e.results[i][0].transcript;
+      }
+      session = fin.trim();
+      live.value = [committed, session, interim.trim()].filter(Boolean).join(' ');
+      live.scrollTop = live.scrollHeight; refresh();
+    };
+    rec.onerror = (e) => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') stop('Microphone access is blocked. Allow it in your browser, or type your note.');
+      else if (e.error === 'audio-capture') stop('No microphone found. Type your note instead.');
+      else if (e.error === 'network') stop('The speech service is unreachable. Type your note instead.');
+    };
+    // Browsers end recognition after a pause: keep what was heard and restart until time is up.
+    rec.onend = () => {
+      committed = [committed, session].filter(Boolean).join(' '); session = '';
+      if (!listening || !rec) return;
+      try { rec.start(); } catch (e) { setTimeout(() => { if (listening && rec) try { rec.start(); } catch (x) { stop('Dictation stopped. Edit if needed, then save.'); } }, 250); }
+    };
+    try { rec.start(); listening = true; label.textContent = 'Listening'; } catch (e) { stop('Could not start dictation. Type your note instead.'); }
+    (async () => {
+      while (listening && elapsed < LIMIT * 10) {
+        await sleep(100);
+        if (!listening) break;
+        elapsed += 1;
+        $('#secs').textContent = Math.max(0, Math.ceil(LIMIT - elapsed / 10));
+        $('#clock').style.setProperty('--p', (elapsed / (LIMIT * 10)) * 100);
+      }
+      if (listening) stop('Time is up. Edit if needed, then save.');
+    })();
+    return result.then((t) => ({text: t, seconds: Math.round(elapsed / 10)}));
+  }
   async function voiceNote(fromChat) {
     pending = null; mainChips();
     if (!fromChat) mine('Take a 15-second note');
-    const vn = D.mvp.voice_note, dlg = $('#rec');
-    dlg.innerHTML = `<div class="small">15-second note</div><div class="clock" id="clock"><b id="secs">15</b></div>
-      <div class="wave">${Array.from({length: 18}, (_, i) => `<i style="animation-delay:${(i % 6) * 0.12}s"></i>`).join('')}</div>
-      <div class="live" id="live"></div><button class="btn primary" id="stop" disabled>${ic('stop', 14)}Stop and save</button>`;
-    dlg.showModal();
-    const words = vn.transcript.split(' ');
-    let elapsed = 0, stopped = false, cancelled = false;
-    $('#stop').onclick = () => { stopped = true; };
-    dlg.oncancel = (ev) => { ev.preventDefault(); cancelled = stopped = true; };
-    while (!stopped && elapsed < vn.seconds * 10) {
-      await sleep(100); elapsed += 1;
-      $('#secs').textContent = Math.max(0, Math.ceil(vn.seconds - elapsed / 10));
-      $('#clock').style.setProperty('--p', (elapsed / (vn.seconds * 10)) * 100);
-      $('#live').textContent = words.slice(0, Math.min(words.length, Math.round(elapsed * words.length / 80))).join(' ');
-      if (elapsed >= 80) $('#stop').disabled = false;
-    }
-    dlg.close();
-    if (cancelled) { sys('Voice note discarded'); return; }
-    const secs = Math.max(8, Math.round(elapsed / 10));
-    add(`<div class="msg me"><div class="bubble">${ic('mic', 14)} Voice note · 0:${String(secs).padStart(2, '0')}<br><i>${esc(vn.transcript)}</i></div></div>`);
-    const x = vn.extracted;
-    await tool('transcribe(voice_note)', `${words.length} words`);
-    await tool('extract(founder, company, next_step)', `${x.founder} · ${x.company} · ${x.next}`);
-    await tool(`save_note("${x.company}")`, 'saved to Roundtable firm memory, folder last-touch', {kind: 'mem'});
-    const t = vn.team;
-    await tool(`check_relationship("${x.founder}")`, 'reply received', {kind: 'agent', target: `${t.name}'s agent`});
+    const {text, seconds} = await recordNote();
+    if (!text) { sys('Note discarded'); return; }
+    const dictated = seconds > 0;
+    add(`<div class="msg me"><div class="bubble">${ic(dictated ? 'mic' : 'Event notes', 14)} ${dictated ? `Voice note · 0:${String(seconds).padStart(2, '0')}` : 'Typed note'}<br><i>${esc(text)}</i></div></div>`);
+    if (dictated) await tool('transcribe(voice_note)', `${words(text).length} words, transcribed live in your browser`);
+    let r;
+    try { r = await post('/api/note', {text}); } catch (e) { say('I could not read that note right now. Please try again.'); return; }
+    const x = r.note, who = x.founder || x.company;
+    await tool('extract(founder, company, next_step)', `${x.founder || 'no name heard'} · ${x.company || 'no company heard'} · ${r.next} (${r.how})`);
+    await tool(`save_note("${who || 'untitled'}")`, r.saved === 'roundtable' ? 'saved to Roundtable firm memory, folder last-touch'
+      : r.saved === 'failed' ? 'Roundtable save failed; kept in this session' : 'saved to firm memory (demo: Roundtable not connected)', {kind: 'mem'});
+    if (!who) { say('Saved, but I could not tell who you met. Next time say their name and company, like "Just met Tracy Huang from Interlink IQ."'); return; }
+    const k = r.known;
+    await tool(`check_relationship("${who}")`, k.id ? 'reply received' : 'no prior contact', {kind: 'agent', target: k.id ? `${k.name}'s agent` : 'all team agents'});
     await typing(450);
-    say(esc(t.reply), {id: t.id, name: t.name});
-    await tool(`schedule_followup("${x.founder}", ${t.when})`, t.result, {kind: 'mem'});
-    S.memory[x.company] = {founder: x.founder, next: t.next.replace(/^you /, 'You ')}; save();
-    say(`Saved. ${x.facts.map(esc).join(' · ')}.<br>Next steps: ${esc(t.next)} Nothing was sent without you.`);
-    pending = async () => {
-      await tool(`queue_intro("${x.founder}", ${t.name}, Monday 10:00)`, 'intro email queued for your final review (demo data)', {kind: 'agent', target: `${t.name}'s agent`});
-      say(`Done. The intro between ${esc(x.founder)} and ${esc(t.name)} is queued with the Monday 10:00 slot. You review the final email before it goes out.`);
-    };
-    setChips([{label: `Approve intro to ${t.name}`, icon: 'check', cls: 'on', act: () => run(() => ask('Approve the intro'))}].concat(mainList()));
+    if (k.id) say(esc(k.text), {id: k.id, name: k.name}); else say(esc(k.text));
+    await tool(`schedule_followup("${who}", ${r.due})`, `reminder set: ${r.next}`, {kind: 'mem'});
+    S.memory[x.company || who] = {founder: x.founder || '', next: r.next}; save();
+    say(`Saved.${r.facts.length ? ' ' + r.facts.map(esc).join(' · ') + '.' : ''}<br>Next step: ${esc(r.next)} (${esc(r.due)}). Nothing was sent without you.`);
+    if (k.intro) {
+      pending = async () => {
+        await tool(`queue_intro("${who}", ${k.name}, Monday 10:00)`, 'intro email queued for your final review (demo data)', {kind: 'agent', target: `${k.name}'s agent`});
+        say(`Done. The intro between ${esc(who)} and ${esc(k.name)} is queued with the Monday 10:00 slot. You review the final email before it goes out.`);
+      };
+      setChips([{label: `Approve intro to ${k.name}`, icon: 'check', cls: 'on', act: () => run(() => ask('Approve the intro'))}].concat(mainList()));
+    }
   }
 
   // ---------------------------------------------------------------- settings

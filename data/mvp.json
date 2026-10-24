@@ -118,26 +118,6 @@
     }
   ],
   "voice_note": {
-    "seconds": 15,
-    "transcript": "Just met Tracy Huang, founder of Interlink IQ. It's a networking platform that helps college students connect with alumni and land jobs. She also invests at STRUC Ventures, focused on pre-seed and seed AI agents and workflow automation. Next step: follow up this week and compare notes on AI agent deals.",
-    "extracted": {
-      "founder": "Tracy Huang",
-      "company": "Interlink IQ",
-      "facts": [
-        "Founder, Interlink IQ",
-        "Student-to-alumni networking platform",
-        "Investor at STRUC Ventures",
-        "Thesis: pre-seed and seed AI agents"
-      ],
-      "next": "Follow up this week, compare notes on AI agent deals"
-    },
-    "team": {
-      "id": "cara",
-      "name": "Cara",
-      "when": "Monday 9:00",
-      "reply": "Cara hasn't met Tracy yet, and nobody else at the firm has either. Tracy's thesis on AI agents overlaps with Cara's, so Cara would like an intro. She's free Monday at 10:00 or 2:00. I'll wait for your approval before anything goes out.",
-      "result": "reminder set, you own the relationship, Cara wants an intro",
-      "next": "you follow up with Tracy by Monday 9:00 and offer the intro to Cara."
-    }
+    "seconds": 15
   }
 }
