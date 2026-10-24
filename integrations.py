@@ -124,11 +124,19 @@ TRACER = Tracer()
 
 # --------------------------------------------------------------------------- Nicrron
 class LLM:
-    """Nicrron API: OpenAI-compatible endpoint (https://api.nicrron.ai/v1)."""
+    """Nicrron API: OpenAI-compatible endpoint (https://api.nicrron.ai/v1) that routes to many providers' models.
+
+    NICRRON_MODEL writes up notes (quality matters); NICRRON_FAST_MODEL decides what each message asks for (speed matters).
+    There is no "nicrron/auto" model, so that old default is ignored."""
+
+    DEFAULT_MODEL = "anthropic/claude-sonnet-5-5"
+    DEFAULT_FAST_MODEL = "anthropic/claude-haiku-5-5"
 
     def __init__(self):
         self.key = env("NICRRON_API_KEY")
-        self.model = env("NICRRON_MODEL", default="nicrron/auto")
+        configured = env("NICRRON_MODEL")
+        self.model = configured if configured and configured != "nicrron/auto" else self.DEFAULT_MODEL
+        self.fast_model = env("NICRRON_FAST_MODEL", default=self.DEFAULT_FAST_MODEL)
         self.base = env("NICRRON_BASE_URL", default="https://api.nicrron.ai/v1")
         self.live = bool(self.key)
         self.error = None
@@ -142,28 +150,39 @@ class LLM:
                 self.live, self.error = False, scrub(f"Nicrron init failed: {e}")
 
     def chat(self, system: str, user: str, agent_name: str, max_tokens: int = 700, session_id=None, trace: bool = True,
-             agent_id=None) -> str | None:
+             agent_id=None, fast: bool = False) -> str | None:
         if not self.client:
             return None
+        model = self.fast_model if fast else self.model
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         t0 = time.time()
         try:
-            r = self.client.chat.completions.create(model=self.model, messages=messages, temperature=0.2, max_tokens=max_tokens)
+            try:
+                r = self.client.chat.completions.create(model=model, messages=messages, temperature=0.2, max_tokens=max_tokens)
+            except Exception as e:
+                # A configured model that doesn't exist: fall back to the default once.
+                default = self.DEFAULT_FAST_MODEL if fast else self.DEFAULT_MODEL
+                if model == default or "model" not in str(e).lower():
+                    raise
+                model = default
+                r = self.client.chat.completions.create(model=model, messages=messages, temperature=0.2, max_tokens=max_tokens)
         except Exception as e:
-            self.error = scrub(f"Nicrron call failed: {e}")
+            self.error = scrub(f"Nicrron ({model}) failed: {e}")[:240]
             if trace:
-                TRACER.llm(self.model, messages, scrub(f"[error] {e}")[:300], int((time.time() - t0) * 1000), None, agent_name,
+                TRACER.llm(model, messages, scrub(f"[error] {e}")[:300], int((time.time() - t0) * 1000), None, agent_name,
                            session_id, agent_id)
             return None
+        self.error = None
         out = r.choices[0].message.content or ""
         if trace:
-            TRACER.llm(self.model, messages, out, int((time.time() - t0) * 1000), getattr(r, "usage", None), agent_name,
+            TRACER.llm(model, messages, out, int((time.time() - t0) * 1000), getattr(r, "usage", None), agent_name,
                        session_id, agent_id)
         return out
 
-    def json(self, system: str, user: str, agent_name: str, session_id=None, trace: bool = True, agent_id=None) -> dict | None:
-        out = self.chat(system + "\nReturn ONLY valid JSON. No prose, no code fences.", user, agent_name,
-                        session_id=session_id, trace=trace, agent_id=agent_id)
+    def json(self, system: str, user: str, agent_name: str, session_id=None, trace: bool = True, agent_id=None,
+             max_tokens: int = 700, fast: bool = False) -> dict | None:
+        out = self.chat(system + "\nReturn ONLY valid JSON. No prose, no code fences.", user, agent_name, max_tokens=max_tokens,
+                        session_id=session_id, trace=trace, agent_id=agent_id, fast=fast)
         if not out:
             return None
         txt = out.strip()

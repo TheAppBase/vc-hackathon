@@ -222,15 +222,47 @@ def build_profile(a: dict, name: str) -> dict:
 
 
 # --------------------------------------------------------------------------- notes -> founders
-def extract(user: dict, text: str, when: dt.date) -> tuple[dict, str]:
-    """Read a note for founder, company, event and next step. Nicrron when configured, keyword rules otherwise."""
+def extract(user: dict, text: str, when: dt.date) -> tuple[dict, str, str]:
+    """Rewrite a note professionally and read the founder, company, event and next step out of it.
+
+    Returns (fields, reader, rewritten). Nicrron when configured; otherwise keyword rules and a light tidy-up."""
     if ix.LLM_CLIENT.live:
         name, aid = agent_of(user)
         got = ix.LLM_CLIENT.json(engine.NOTE_SYSTEM.format(today=when.isoformat(), weekday=when.strftime("%A")), text[:4000],
-                                 name, session_id=session.get("sid"), trace=traced(user), agent_id=aid)
+                                 name, session_id=session.get("sid"), trace=traced(user), agent_id=aid, max_tokens=900)
         if got:
-            return engine.clean_note(got), "Nicrron"
-    return engine.clean_note(engine.heuristic_note(text, when)), "keyword rules"
+            rewritten = str(got.pop("note", "") or "").strip()
+            # A rewrite that is empty or balloons is not a rewrite: keep the user's words.
+            if not rewritten or len(rewritten) > 2 * len(text) + 300:
+                rewritten = engine.tidy(text)
+            return engine.clean_note(got), "Nicrron", guard.redact(rewritten)[0]
+    return engine.clean_note(engine.heuristic_note(text, when)), "keyword rules", engine.tidy(text)
+
+
+ROUTES = {"save_note", "conversations", "rank", "source", "lookup", "who_knows", "team", "help", "chat"}
+
+
+@app.post("/api/route")
+@login_required
+def api_route(user):
+    """Decide what a typed or dictated message asks for. The LLM decides when configured; phrase matching otherwise."""
+    t0 = time.time()
+    text = str((request.get_json(silent=True) or {}).get("text") or "").strip()[:2000]
+    if not text:
+        return jsonify({"intent": "help", "query": "", "reply": "", "engine": "none"})
+    if ix.LLM_CLIENT.live:
+        name, aid = agent_of(user)
+        focus = (user.get("profile") or {}).get("focus") or "not set yet"
+        got = ix.LLM_CLIENT.json(engine.ROUTER_SYSTEM.format(focus=focus), text, name, session_id=session.get("sid"),
+                                 trace=traced(user), agent_id=aid, max_tokens=300, fast=True)
+        if got and got.get("intent") in ROUTES:
+            out = {"intent": got["intent"], "query": str(got.get("query") or "").strip()[:120],
+                   "reply": str(got.get("reply") or "").strip()[:800], "engine": "Nicrron"}
+            trace_tool(user, "route", text[:300], json.dumps(out)[:300], t0)
+            return jsonify(out)
+    out = {**engine.route_rules(text), "reply": "", "engine": "rules"}
+    trace_tool(user, "route", text[:300], json.dumps(out)[:300], t0)
+    return jsonify(out)
 
 
 def notes_of(u: str, limit: int = 200) -> list[dict]:
@@ -381,11 +413,12 @@ def api_note_save(user):
     raw = str(p.get("text") or "").strip()
     if not raw:
         return jsonify({"error": "Empty note"}), 400
-    text, redacted = guard.redact(raw[:guard.MAX_NOTE])
-    extracted, reader = extract(user, text, dt.date.today())
+    original, redacted = guard.redact(raw[:guard.MAX_NOTE])
+    extracted, reader, text = extract(user, original, dt.date.today())
     mode = mode_of(user)
     act = {"id": new_id(), "type": "save_note", "mode": mode, "created_at": now(), "summary": "Save a note to the firm memory",
-           "payload": {"text": text, "source": "dictation" if p.get("source") == "dictation" else "typed", "extracted": extracted}}
+           "payload": {"text": text, "original": original, "source": "dictation" if p.get("source") == "dictation" else "typed",
+                       "extracted": extracted}}
     if redacted:
         act["redacted"] = redacted
     if mode == "auto":
@@ -394,7 +427,8 @@ def api_note_save(user):
     if act.get("review", {}).get("decision") == "block":
         act["status"], act["reason"] = "blocked", f"PRISM blocked this note: {act['review']['reason']}"
     else:
-        note = {"id": act["id"], "text": text, "source": act["payload"]["source"], "extracted": extracted, "created_at": act["created_at"]}
+        note = {"id": act["id"], "text": text, "original": original, "source": act["payload"]["source"], "extracted": extracted,
+                "created_at": act["created_at"]}
         if ix.AKTA.live and extracted.get("company"):
             t1, ix.AKTA.error = time.time(), None
             note["akta"] = ix.AKTA.lookup(extracted["company"])  # free Company Search only; no credits per note
@@ -612,7 +646,8 @@ def api_health():
 @login_required
 def api_integrations(user):
     out = {"store": store.mode(),
-           "nicrron": ix.LLM_CLIENT.live, "akta": {"live": ix.AKTA.live, "paid": ix.AKTA.use_paid, "error": ix.AKTA.error},
+           "nicrron": {"live": ix.LLM_CLIENT.live, "model": ix.LLM_CLIENT.model, "fast_model": ix.LLM_CLIENT.fast_model,
+                       "error": ix.LLM_CLIENT.error}, "akta": {"live": ix.AKTA.live, "paid": ix.AKTA.use_paid, "error": ix.AKTA.error},
            "roundtable": {"live": ix.ROUNDTABLE.live, "error": ix.ROUNDTABLE.error}, "prism": {"configured": guard.live()}}
     if guard.live():
         out["prism"].update(ix.TRACER.status())

@@ -116,6 +116,7 @@ max-height:168px;line-height:1.45}
 .action.blocked,.action.failed{border-color:rgba(255,59,48,.5)}.action.blocked .st,.action.failed .st,.action.blocked .th .ic{color:var(--red)}
 .action.denied .st{color:var(--gray)}.action .body{font-size:13.5px;margin:8px 0 2px;white-space:pre-wrap;max-height:220px;overflow:auto}
 .action .why{margin-top:4px}
+.orig{font-size:12.5px;color:var(--muted);margin:4px 0 0}.orig summary{cursor:pointer}
 .xt{display:grid;grid-template-columns:88px 1fr;gap:2px 10px;font-size:13px;margin:8px 0 0}.xt dt{color:var(--muted)}.xt dd{margin:0}
 .seg{display:grid;gap:8px}.seg label{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:14px;border:1px solid var(--edge);
 background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue) inset}
@@ -271,11 +272,11 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
       a.reason || '', a.roundtable ? 'Copied to Roundtable.' : ''].filter(Boolean).map((t) => `<div class="why">${esc(t)}</div>`).join('');
     return `<div class="action ${esc(a.status)}" data-aid="${esc(a.id)}"><div class="th">${ic(a.status === 'done' ? 'check' : 'shield', 14)}<b>${a.status === 'done' ? 'Note saved to your firm memory' : 'Note not saved'}</b>
       <span class="st">${esc(ST[a.status] || a.status)}</span></div><div class="small">${a.mode === 'auto' ? 'Auto mode · reviewed by PRISM' : 'Ask mode · PRISM off'}</div>
-      <div class="body">${esc((a.payload || {}).text || '')}</div>${a.status === 'done' ? xt : ''}${extra}</div>`;
+      <div class="body">${esc((a.payload || {}).text || '')}</div>${(a.payload || {}).original && a.payload.original !== a.payload.text ? `<details class="orig"><summary>What you said</summary>${esc(a.payload.original)}</details>` : ''}${a.status === 'done' ? xt : ''}${extra}</div>`;
   }
   async function note(text, via) {
-    const a = await tool('save_note()', () => api('/api/notes', {text, source: via}), {kind: 'db', write: true,
-      result: (a) => `read with ${a.reader}${a.akta ? ' · checked on akta.pro' : ''} · ${a.hits.length ? `${a.hits.length} teammate match${a.hits.length > 1 ? 'es' : ''}` : 'no teammate has met them yet'} · ${(ST[a.status] || a.status).toLowerCase()}`});
+    const a = await tool('write_up_and_save_note()', () => api('/api/notes', {text, source: via}), {kind: 'db', write: true,
+      result: (a) => `${a.reader === 'Nicrron' ? 'written up by AI' : 'read with keyword rules'}${a.akta ? ' · checked on akta.pro' : ''} · ${a.hits.length ? `${a.hits.length} teammate match${a.hits.length > 1 ? 'es' : ''}` : 'no teammate has met them yet'} · ${(ST[a.status] || a.status).toLowerCase()}`});
     a.akta_line = aktaLine(a.akta);
     block(noteHTML(a));
     for (const h of a.hits) say(esc(h.text), {id: h.username, name: h.who});
@@ -330,34 +331,35 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   function mainChips() {
     setChips([
       {label: 'Record a note', icon: 'mic', act: () => (listening ? stopDictation() : startDictation())},
-      {label: 'Who have I been talking to?', icon: 'list', act: () => run(() => ask('Who have I been talking to?'))},
-      {label: 'Rank my founders', icon: 'spark', act: () => run(() => ask('Rank my founders'))},
-      {label: 'Source founders', icon: 'globe', act: () => run(() => ask('Source founders'))},
-      {label: 'What is my team working on?', icon: 'agent', act: () => run(() => ask('What is my team working on?'))},
+      {label: 'Who have I been talking to?', icon: 'list', act: () => run(async () => { mine('Who have I been talking to?'); await contacts(); })},
+      {label: 'Rank my founders', icon: 'spark', act: () => run(async () => { mine('Rank my founders'); await rank(); })},
+      {label: 'Source founders', icon: 'globe', act: () => run(async () => { mine('Source founders'); await source(''); })},
+      {label: 'What is my team working on?', icon: 'agent', act: () => run(async () => { mine('What is my team working on?'); await team(); })},
     ]);
     chipsEl.querySelector('.chip').dataset.free = '1';
   }
 
   // ---------------------------------------------------------------- skills (reads)
   let FOUNDERS = [];
+  const HELP = 'Record a note after any event or meeting and I\'ll write it up properly, pull out the founder, company, where you met and your next step, and check the company on akta.pro. You can also ask me to source founders in any field, look up a company, rank your founders, show who you\'ve been talking to and what\'s due, check what your team is working on, or ask whether anyone on the team knows someone.';
   async function ask(text, via) {
     mine(text);
-    const q = text.toLowerCase().trim();
-    // Requests are short or end in "?"; anything longer is a note, even if it mentions "follow up" or "overdue".
-    const isAsk = /\?$/.test(q) || q.split(/\s+/).length <= 9;
-    let m;
-    if (isAsk) {
-      if ((m = text.trim().match(/^(?:ask (?:the |my )?team (?:about )?|who (?:else )?knows |has anyone (?:else )?met )(.+?)\??$/i))) return askTeam(m[1]);
-      if ((m = text.trim().match(/^(?:look ?up|search(?: akta(?:\.pro)?(?: for)?)?) (.+?)(?: on akta(?:\.pro)?)?\??$/i))) return lookup(m[1]);
-      if (/^(rank|score)\b|^(show )?my founders\??$|best founders|^who should i (meet|back|call)/.test(q)) return rank();
-      if (/^(source|find)( new)? (founders|startups|companies)\b|^source\??$/.test(q)) return source(/^(?:source|find)\s+(?:founders|startups|companies)?\s*(?:in|for|doing)\s+(.+?)\??$/i.exec(text.trim()));
-      if (/who (have|am) i (been )?talk|who did i meet|my conversations|^what('s| is) next|^(my |show )?follow[- ]?ups?\??$|what do i owe|what('s| is) overdue/.test(q)) return contacts();
-      if (/what is my team|team working|what's my team|my team doing/.test(q)) return team();
-      if (/^(help|what can you do)\??$/.test(q)) {
-        return say('Record a note after any event or meeting and I\'ll read out the founder, company, where you met and your next step, and check the company on akta.pro. Then ask "who have I been talking to?", "rank my founders", "source founders", "look up Patchbay", "what is my team working on?" or "who knows Patchbay?". Anything that isn\'t a question, I save as a note.');
-      }
-    }
-    return note(text, via);
+    const stopTyping = thinking();
+    let r;
+    try { r = await api('/api/route', {text}); } finally { stopTyping(); }
+    if (r.intent === 'save_note') return note(text, via);
+    if (r.intent === 'conversations') return contacts();
+    if (r.intent === 'rank') return rank();
+    if (r.intent === 'source') return source(r.query);
+    if (r.intent === 'lookup') return r.query ? lookup(r.query) : say('Which company should I look up?');
+    if (r.intent === 'who_knows') return r.query ? askTeam(r.query) : say('Who should I ask the team about?');
+    if (r.intent === 'team') return team();
+    if (r.intent === 'help') return say(esc(HELP));
+    return say(esc(r.reply || HELP));
+  }
+  function thinking() {
+    const el = add(`<div class="msg typing">${agentAvatar()}<div class="bubble"><i></i><i></i><i></i></div></div>`);
+    return () => el.remove();
   }
   async function loadFounders() {
     const r = await tool('list_founders(my notes)', () => api('/api/founders'), {kind: 'db',
@@ -405,7 +407,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     if (c) { navigator.clipboard && navigator.clipboard.writeText(c.closest('.indent, .bubble').querySelector('.draft').textContent).then(() => { c.textContent = 'Copied'; }); return; }
     if (busy) return;
     if (d) { const f = FOUNDERS.find((x) => x.id === d.dataset.draft); if (f) draft(f); }
-    if (t) { const f = FOUNDERS.find((x) => x.id === t.dataset.team); if (f) run(() => ask(`Ask the team about ${f.company || f.founder}`)); }
+    if (t) { const f = FOUNDERS.find((x) => x.id === t.dataset.team); if (f) run(async () => { mine(`Ask the team about ${f.company || f.founder}`); await askTeam(f.company || f.founder); }); }
   });
   function draft(f) {
     const who = (f.founder || '').split(' ')[0] || 'there';
@@ -413,8 +415,8 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     const text = `Hi ${who},\n\nGreat to meet you${where}. I'd love to keep the conversation going about ${f.company || 'what you\'re building'}. Do you have 20 minutes next week?\n\nBest,\n${ME.first}`;
     say(`Here is a follow-up for ${esc(f.founder || f.company)}. Copy it into your email or messages; I don't send anything.<div class="draft">${esc(text)}</div><div class="acts"><button class="btn" data-copy>${ic('copy', 13)}Copy</button></div>`);
   }
-  async function source(m) {
-    const q = m && m[1] ? m[1] : '';
+  async function source(q) {
+    q = q || '';
     const r = await tool(`akta.pro find_companies("${q || ME.profile.focus}")`, () => api('/api/source' + (q ? '?q=' + encodeURIComponent(q) : '')), {kind: 'globe',
       result: (r) => `${r.companies.length} companies${r.error ? ` · ${r.error}` : ''}`});
     if (!r.companies.length) { say(`akta.pro returned no companies for "${esc(r.query)}".${r.error ? ` (${esc(r.error)})` : ''}`); return; }
@@ -539,7 +541,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
         row('Firm memory', /Blob/.test(it.store), it.store),
         row('akta.pro', it.akta.live, it.akta.live ? `Connected${it.akta.paid ? ', Pro lists on' : ', free search only'}${it.akta.error ? ` · last error: ${it.akta.error}` : ''}` : 'Not connected (AKTA_API_KEY)'),
         row('PRISM', pr.credential === 'ok', !pr.configured ? 'Not connected (PRISMTRACE_API_KEY)' : pr.credential === 'ok' ? `Credential OK${pr.live ? ', live traces arriving' : `, waiting for live traces${pr.blocked_step ? ` (${pr.blocked_step})` : ''}`}` : `Credential ${pr.credential}${pr.detail ? `: ${pr.detail}` : ''}`),
-        row('Nicrron', it.nicrron, it.nicrron ? 'Reads your notes' : 'Off: notes are read with keyword rules (NICRRON_API_KEY)'),
+        row('AI (Nicrron)', it.nicrron.live && !it.nicrron.error, it.nicrron.live ? `Understands your requests (${it.nicrron.fast_model}) and writes up your notes (${it.nicrron.model})${it.nicrron.error ? ` · last error: ${it.nicrron.error}` : ''}` : 'Off: requests are matched by phrases and notes are only tidied, not rewritten (set NICRRON_API_KEY)'),
         row('Roundtable', it.roundtable.live, it.roundtable.live ? `Notes are copied to Roundtable${it.roundtable.error ? ` · last error: ${it.roundtable.error}` : ''}` : 'Not connected (ROUNDTABLE_MCP_URL and ROUNDTABLE_MCP_TOKEN)'),
       ].join('');
       const keep = $('#username') ? $('#username').value : '';

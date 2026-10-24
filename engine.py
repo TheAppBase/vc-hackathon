@@ -33,14 +33,39 @@ WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", 
 EMPTY_NOTE = {"founder": None, "company": None, "event": None, "sector": None, "stage": None, "one_liner": None,
               "metrics": {}, "background": [], "raising_usd": None, "next_step": None, "next_due": None}
 
-NOTE_SYSTEM = """You read a short note a venture capital investor recorded right after meeting someone (often dictated, so
-expect speech-to-text mistakes). Extract: founder (full name of the founder they met, or null), company (startup name or null),
-event (where they met, e.g. "Deal Flow hackathon", or null), sector (one of: consumer, cpg, ai, devtools, fintech, climate,
-health, other, or null), stage (idea|pre-seed|seed|series-a|later|null), one_liner (<=15 words on what the company does, or null),
-metrics (object of numbers ONLY if stated: mrr_usd, stores, pilots, github_stars, users, paying_customers),
-background (list of short strings about the founder), raising_usd (number|null),
-next_step (the investor's own next action, short, or null), next_due (ISO date YYYY-MM-DD if a deadline is stated or implied
-like "by Monday", else null). Today is {today} ({weekday}). Use null when not stated. NEVER invent names or numbers."""
+NOTE_SYSTEM = """You are the note-taking agent of a venture capital investor. They just recorded a note after an event or a meeting,
+often dictated, so expect speech-to-text mistakes and filler words.
+
+1. "note": rewrite it as a clear, professional investor note. Concise, well-punctuated, first person ("Met ...", "I'll ..."),
+   short sentences or a few tight lines. Keep EVERY fact: every name, company, number, date, place and next step. Fix obvious
+   speech-to-text errors and drop filler ("um", "like", "you know"). NEVER add facts, opinions, numbers or names that are
+   not in the note. If the note is already clean, return it almost unchanged.
+2. Extract: founder (full name of the founder they met, or null), company (startup name or null), event (where they met,
+   e.g. "Deal Flow hackathon", or null), sector (one of: consumer, cpg, ai, devtools, fintech, climate, health, other, or
+   null), stage (idea|pre-seed|seed|series-a|later|null), one_liner (<=15 words on what the company does, or null),
+   metrics (object of numbers ONLY if stated: mrr_usd, stores, pilots, github_stars, users, paying_customers),
+   background (list of short strings about the founder), raising_usd (number|null), next_step (the investor's own next
+   action, short, or null), next_due (ISO date YYYY-MM-DD if a deadline is stated or implied like "by Monday", else null).
+Today is {today} ({weekday}). Use null when not stated. NEVER invent names or numbers.
+Return JSON with keys: note, founder, company, event, sector, stage, one_liner, metrics, background, raising_usd, next_step, next_due."""
+
+ROUTER_SYSTEM = """You are the personal AI agent of a venture capital investor, inside a chat app. Decide what their message
+asks for and return JSON {{"intent": ..., "query": ..., "reply": ...}}.
+
+intent is one of:
+- "save_note": they are telling you about a meeting, a person, a company, an event, or anything to remember. This is the
+  default for statements. query "", reply "".
+- "conversations": who they have been talking to, who they met, their follow-ups, what is due or overdue.
+- "rank": rank, score or prioritise the founders they have met.
+- "source": find, source, discover or suggest new founders, startups or companies. query = the field, sector or kind of
+  company they asked for (e.g. "climate tech", "AI agents for finance"), or "" if they did not name one.
+- "lookup": look up or research one specific company. query = the company name.
+- "who_knows": whether anyone on their team knows or has met a person or company. query = that name.
+- "team": what their teammates are working on.
+- "help": what you can do.
+- "chat": any other question or request. reply = a short, helpful answer (2-4 sentences). Never invent facts about their
+  notes, founders or team; point them to the right request instead.
+Their focus: {focus}."""
 
 
 # --------------------------------------------------------------------------- keyword extraction (no LLM key)
@@ -141,6 +166,51 @@ def heuristic_note(text: str, today: dt.date) -> dict:
         ext["next_step"] = m.group(1).strip().rstrip(".")[:160]
         ext["next_due"] = due_from(ext["next_step"], today)
     return ext
+
+
+def route_rules(text: str) -> dict:
+    """What a message asks for, by phrase matching (used when no LLM key is set). Statements are notes."""
+    t = " ".join(text.strip().split()).rstrip("?!. ")
+    if not (text.strip().endswith("?") or len(t.split()) <= 12):
+        return {"intent": "save_note", "query": ""}  # longer statements are notes, even if they mention "follow up"
+    lead = r"^(?:hey |hi |ok |okay )?(?:can you |could you |would you |please |pls |i want you to |i'd like you to |help me )?"
+
+    def match(pattern: str):
+        return re.match(lead + pattern, t, flags=re.I)
+
+    if m := match(r"(?:ask (?:the |my )?team (?:about |if anyone knows )?|who (?:else )?knows |does anyone know |"
+                  r"has anyone (?:else )?met )(.+)$"):
+        return {"intent": "who_knows", "query": m.group(1)}
+    if (m := match(r"(?:look ?up|search(?: akta(?:\.pro)?(?: for)?)?|research|check out|tell me about)\s+(.+?)(?: on akta(?:\.pro)?)?$")) \
+            and not re.search(r"\b(founders?|startups?|companies)\b", m.group(1), flags=re.I):
+        return {"intent": "lookup", "query": m.group(1)}
+    if m := match(r"(?:source|find|look for|search for|discover|show me|get me|suggest|recommend|scout)\b"
+                  r"(?:\s+(?:me|some|new|more|a few|good|great|promising|early[- ]stage|interesting))*"
+                  r"\s+(?:founders?|startups?|companies|teams)\b"
+                  r"(?:\s+(?:in|for|doing|working on|building|around|focused on|within|on)\s+(.+))?$"):
+        return {"intent": "source", "query": m.group(1) or ""}
+    q = t.lower()
+    if match(r"(?:rank|score|prioriti[sz]e)\b") or re.search(r"^(?:show )?my founders$|best founders|who should i (meet|back|call)", q):
+        return {"intent": "rank", "query": ""}
+    if re.search(r"who (have|am) i (been )?talk|who did i meet|my conversations|^what('s| is) next|^(my |show )?follow[- ]?ups?$|"
+                 r"what do i owe|what('s| is) (overdue|due)", q):
+        return {"intent": "conversations", "query": ""}
+    if re.search(r"what is my team|team working|what's my team|my team doing|what are my teammates", q):
+        return {"intent": "team", "query": ""}
+    if re.match(r"^(help|what can you do)$", q):
+        return {"intent": "help", "query": ""}
+    return {"intent": "save_note", "query": ""}
+
+
+def tidy(text: str) -> str:
+    """Minimal clean-up of a note when no LLM is available: spacing, capital first letter, closing punctuation."""
+    t = re.sub(r"\s+([,.!?;:])", r"\1", " ".join(text.split()))
+    t = re.sub(r"\b(um+|uh+|erm)\b[,]?\s*", "", t, flags=re.I).strip()
+    if t:
+        t = t[0].upper() + t[1:]
+        if t[-1] not in ".!?":
+            t += "."
+    return t
 
 
 def clean_note(ext: dict | None) -> dict:
