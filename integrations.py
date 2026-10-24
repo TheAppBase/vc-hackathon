@@ -16,8 +16,9 @@ import httpx
 
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
-RUNTIME = ROOT / "runtime"
-RUNTIME.mkdir(exist_ok=True)
+# Serverless hosts (Vercel) only allow writes under /tmp.
+RUNTIME = Path(os.getenv("LAST_TOUCH_RUNTIME") or ("/tmp/last-touch" if os.getenv("VERCEL") else ROOT / "runtime"))
+RUNTIME.mkdir(parents=True, exist_ok=True)
 CACHE_FILE = RUNTIME / "cache.json"
 _lock = threading.Lock()
 
