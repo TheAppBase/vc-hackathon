@@ -284,10 +284,10 @@ class Akta:
 class NotesStore:
     """Firm-wide memory on Roundtable: one shared note per founder.
 
-    Local JSON always works. With ROUNDTABLE_API_KEY set (an agent key created for this app at roundtable.bot),
-    every note is saved as a Roundtable shared note via the HTTPS tool API (POST /api/tools/save_note), then updated
-    in place on later runs (note_id is remembered in runtime/roundtable_ids.json). Notes are also mirrored as
-    Markdown in runtime/roundtable_outbox/.
+    Local JSON always works. With ROUNDTABLE_MCP_URL and ROUNDTABLE_MCP_TOKEN set (the MCP URL and bearer key of a
+    connection created for this app at roundtable.bot), every note is saved as a Roundtable shared note by calling the
+    save_note tool over MCP (Streamable HTTP), then updated in place on later runs (note_id is remembered in
+    runtime/roundtable_ids.json). Notes are also mirrored as Markdown in runtime/roundtable_outbox/.
     """
 
     def __init__(self):
@@ -296,12 +296,58 @@ class NotesStore:
         self.outbox.mkdir(exist_ok=True)
         self.ids_path = RUNTIME / "roundtable_ids.json"
         self.ids = json.loads(self.ids_path.read_text()) if self.ids_path.exists() else {}
-        self.base = os.getenv("ROUNDTABLE_API_BASE", "https://roundtable.bot/api/tools")
-        self.key = os.getenv("ROUNDTABLE_API_KEY")
+        self.url = os.getenv("ROUNDTABLE_MCP_URL")
+        self.token = os.getenv("ROUNDTABLE_MCP_TOKEN")
         self.folder = os.getenv("ROUNDTABLE_FOLDER", "last-touch")
-        self.live = bool(self.key)
-        self.error = None
+        self.live = bool(self.url and self.token)
+        self.error = None if self.live or not self.url else "ROUNDTABLE_MCP_TOKEN is missing (the MCP URL needs its bearer key)"
+        self.session = None
         self.pushed = 0
+        self._rpc_id = 0
+
+    def _rpc(self, method: str, params: dict | None = None, notify: bool = False):
+        headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json",
+                   "Accept": "application/json, text/event-stream", "User-Agent": "roundtable-transfer/1.0"}
+        if self.session:
+            headers["Mcp-Session-Id"] = self.session
+        body = {"jsonrpc": "2.0", "method": method, **({"params": params} if params is not None else {})}
+        if not notify:
+            self._rpc_id += 1
+            body["id"] = self._rpc_id
+        r = httpx.post(self.url, headers=headers, json=body, timeout=20)
+        r.raise_for_status()
+        self.session = r.headers.get("mcp-session-id") or self.session
+        if notify:
+            return None
+        if r.headers.get("content-type", "").startswith("text/event-stream"):
+            msgs = [json.loads(line[5:]) for line in r.text.splitlines() if line.startswith("data:")]
+            msg = next(m for m in msgs if m.get("id") == body["id"])
+        else:
+            msg = r.json()
+        if msg.get("error"):
+            raise RuntimeError(msg["error"].get("message", msg["error"]))
+        return msg.get("result")
+
+    def call(self, tool: str, args: dict) -> dict:
+        """Call a Roundtable tool over MCP. Roundtable expects the tool arguments nested under "request"."""
+        if self._rpc_id == 0:
+            self._rpc("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
+                                     "clientInfo": {"name": "last-touch", "version": "1.0"}})
+            self._rpc("notifications/initialized", notify=True)
+        res = self._rpc("tools/call", {"name": tool, "arguments": {"request": args}}) or {}
+        texts = [c.get("text", "") for c in res.get("content", []) if c.get("type", "text") == "text"]
+        if res.get("isError"):
+            raise RuntimeError(" ".join(texts)[:200] or "tool error")
+        sc = res.get("structuredContent")
+        if sc is not None:
+            return sc["result"] if isinstance(sc, dict) and list(sc) == ["result"] else sc
+        parsed = []
+        for t in texts:
+            try:
+                parsed.append(json.loads(t))
+            except ValueError:
+                parsed.append({"text": t})
+        return parsed[0] if len(parsed) == 1 else (parsed or {})
 
     def save_all(self, notes: list[dict], render_md):
         self.path.write_text(json.dumps(notes, indent=1, default=str))
@@ -321,11 +367,7 @@ class NotesStore:
         if self.ids.get(note["id"]):
             body["note_id"] = self.ids[note["id"]]
         try:
-            r = httpx.post(f"{self.base}/save_note", json=body, timeout=20, headers={
-                "Authorization": f"Bearer {self.key}", "Content-Type": "application/json",
-                "User-Agent": "roundtable-transfer/1.0"})
-            r.raise_for_status()
-            data = r.json() if r.content else {}
+            data = self.call("save_note", body)
             nid = data.get("note_id") or data.get("id") or (data.get("note") or {}).get("id")
             if nid:
                 self.ids[note["id"]] = nid

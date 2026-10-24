@@ -28,7 +28,7 @@ Without keys it runs fully on cached or demo data, and every fallback is labelle
 | **Nicrron** | `integrations.LLM` | OpenAI-compatible (`https://api.nicrron.ai/v1`). Extracts structured fields from messy messages and polishes drafts. Turn on with the "Live AI" toggle. |
 | **Akta (Wokelo)** | `integrations.Akta` | Company search (is this company real?), industry search, comparable-company lists and industry news for every brief. Also gives the Watcher its signals on parked founders. |
 | **PRISM (Block Convey)** | `integrations.Tracer` | Every LLM call goes through `trace_llm`, and every agent run is submitted as a trajectory (`submit_trajectory`), one per agent per run. |
-| **Roundtable** | `integrations.NotesStore` | The firm memory: one shared note per founder, saved to Roundtable via `POST /api/tools/save_note` into the `last-touch` folder and updated in place on later runs. Set `ROUNDTABLE_API_KEY` to an agent key created for this app (never a personal assistant's key). Notes are also mirrored to `runtime/roundtable_outbox/*.md`. |
+| **Roundtable** | `integrations.NotesStore` | The firm memory: one shared note per founder, saved to Roundtable by calling its `save_note` tool over MCP into the `last-touch` folder, updated in place on later runs. Set `ROUNDTABLE_MCP_URL` and `ROUNDTABLE_MCP_TOKEN` to the MCP URL and bearer key of a connection created for this app (never a personal assistant's key). Notes are also mirrored to `runtime/roundtable_outbox/*.md`. |
 
 ## Design choices
 - **Rules decide, the AI extracts and writes.** Thesis checks, scores, routing and follow-up timing are plain code, so every verdict has a reason.
