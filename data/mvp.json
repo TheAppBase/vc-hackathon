@@ -116,8 +116,5 @@
       "status": "warm",
       "due": "Keep warm"
     }
-  ],
-  "voice_note": {
-    "seconds": 15
-  }
+  ]
 }

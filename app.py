@@ -2,7 +2,7 @@
 
 Every person at the firm gets a personal agent. The agent interviews them to learn their domain knowledge,
 then sources founders with their own criteria, tracks who they have been talking to across platforms,
-takes 15-second voice notes, and talks to teammates' agents about who owns which founder and what's next.
+takes notes by voice or text, and talks to teammates' agents about who owns which founder and what's next.
 Everything runs on mock data; scoring uses the rules engine in engine.py with weights from the interview.
 
 Run locally: flask --app app run
@@ -264,6 +264,14 @@ def api_note():
     if ext is None:
         ext = nx.heuristic_note(text, today)
     note = nx.clean_note(ext)
+    if not note["founder"] and how == "keyword rules":
+        # "Dana Lee, Orbit, ..." or "Dana Lee from Orbit ...": a note that starts with the person's name.
+        m = re.match(r"\s*([A-Z][a-z'\u2019]+(?:\s[A-Z][a-z'\u2019]+){0,2})\s*(?:,|\bfrom\b|\bof\b|\bat\b)\s*"
+                     r"([A-Z][\w&.\-]*(?:\s[A-Z][\w&.\-]*)?)?", text)
+        if m and m.group(1).split()[0].lower() not in nx.STOP | {"okay", "ok", "so", "just", "great", "note", "today", "met", "i"}:
+            note["founder"] = m.group(1)
+            if not note["company"] and m.group(2):
+                note["company"] = m.group(2)
 
     # Does anyone at the firm already know this founder? Check firm memory, then route by thesis.
     state = base_state()
@@ -422,8 +430,13 @@ box-shadow:inset 0 1px 0 rgba(255,255,255,.5)}.btn.primary{background:var(--grad
 .chip{padding:7px 13px;border-radius:999px;font-size:13px;font-weight:500;background:var(--glass-strong);border:1px solid var(--edge);
 -webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);display:inline-flex;align-items:center;gap:6px}
 .chip.on{background:var(--grad);color:#fff;border-color:transparent}.chip.go{background:var(--text);color:var(--glass-strong);border-color:transparent}
-.composer{display:flex;gap:8px;align-items:center;padding:6px;border-radius:999px}
-.composer input{flex:1;min-width:0;border:0;background:transparent;font:inherit;color:var(--text);padding:8px 12px;outline:none}
+.composer{display:flex;gap:8px;align-items:flex-end;padding:6px;border-radius:24px;transition:box-shadow .2s}
+.composer textarea{flex:1;min-width:0;border:0;background:transparent;font:inherit;color:var(--text);padding:8px 12px;outline:none;resize:none;
+max-height:168px;line-height:1.45;overflow-y:auto}
+.composer.listening{box-shadow:var(--shadow),0 0 0 2px rgba(255,59,48,.55)}
+.round.mic.on{background:var(--red);color:#fff;border-color:transparent;animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(255,59,48,.45)}50%{box-shadow:0 0 0 7px rgba(255,59,48,0)}}
+.listen-hint{min-height:18px;margin:6px 4px 0;text-align:center;font-size:12.5px;color:var(--muted)}
 .round{width:38px;height:38px;border-radius:50%;border:0;display:grid;place-items:center;flex:none}
 .round.send{background:var(--grad);color:#fff}.round.mic{background:var(--glass);border:1px solid var(--edge)}
 .corner{position:fixed;top:16px;right:18px;z-index:30;width:40px;height:40px;border-radius:50%;display:grid;place-items:center}
@@ -442,28 +455,17 @@ dialog::backdrop{background:rgba(10,20,22,.25);-webkit-backdrop-filter:blur(4px)
 .add input{flex:1;min-width:0;border:0;background:transparent;font:inherit;color:var(--text);padding:6px 10px;outline:none}
 .hint{color:var(--muted);font-size:12px;margin:8px 2px 0}.hint.err{color:var(--red)}.rm{background:none;border:0;color:var(--muted);font-size:12.5px}
 .small{color:var(--muted);font-size:12.5px}
-.rec{width:min(420px,calc(100vw - 32px));border-radius:26px;padding:26px;text-align:center;color:var(--text)}
-.rec .clock{position:relative;width:140px;height:140px;margin:6px auto 14px;border-radius:50%;display:grid;place-items:center;
-background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-gradient(var(--red) calc(var(--p,0)*1%),rgba(127,127,127,.2) 0)}
-.rec .clock b{font-size:34px;font-weight:700;font-variant-numeric:tabular-nums}
-.wave{display:flex;gap:3px;justify-content:center;align-items:center;height:28px;margin-bottom:10px}
-.wave i{width:4px;border-radius:2px;background:var(--red);animation:w .9s ease-in-out infinite}
-@keyframes w{0%,100%{height:6px}50%{height:26px}}
-.rec textarea{display:block;width:100%;min-height:96px;resize:vertical;margin:4px 0 14px;padding:10px 12px;border-radius:14px;border:1px solid var(--edge);
-background:var(--glass);color:var(--text);font-family:inherit;font-size:14px;line-height:1.5;outline:none;text-align:left}
-.rec-acts{display:flex;gap:8px;justify-content:center}.rec.stopped .wave i{animation:none;height:6px;opacity:.35}
-.rec #rec-label{min-height:19px}
 @media (max-width:620px){.chat{padding:64px 12px 10px}.indent{margin-left:0}.bubble{max-width:88%}.corner{top:10px;right:10px}
 .kv{grid-template-columns:90px 1fr}.bar{grid-template-columns:100px 1fr 30px}.chips{justify-content:flex-start;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}
 .chip{flex:none}.chips.multi{flex-wrap:wrap}.bottom{padding:0 10px 10px}.row{grid-template-columns:auto 1fr}.row .right{grid-column:2;text-align:left}}
 </style></head><body>
 <div class="app"><div class="chat" id="chat" aria-live="polite"></div>
 <div class="bottom"><div class="chips" id="chips"></div>
-<form class="composer glass" id="composer"><button type="button" class="round mic" id="mic" aria-label="Record a 15-second note"></button>
-<input id="input" autocomplete="off" placeholder="Message your agent" aria-label="Message"><button class="round send" aria-label="Send" id="send"></button></form></div></div>
+<form class="composer glass" id="composer"><button type="button" class="round mic" id="mic" aria-label="Talk instead of typing" title="Talk instead of typing"></button>
+<textarea id="input" rows="1" autocomplete="off" placeholder="Message your agent" aria-label="Message"></textarea><button class="round send" aria-label="Send" id="send"></button></form>
+<div class="listen-hint" id="listen-hint" aria-live="polite"></div></div></div>
 <button class="corner glass" id="open-settings" aria-label="Settings"></button>
 <dialog class="glass sheet" id="settings"></dialog>
-<dialog class="glass rec" id="rec"></dialog>
 <script type="application/json" id="data">__DATA__</script>
 <script>
 (function () {
@@ -497,7 +499,7 @@ background:var(--glass);color:var(--text);font-family:inherit;font-size:14px;lin
     const name = who ? `${who.name}'s agent` : me();
     return add(`<div class="msg">${agentAvatar(who)}<div class="bubble"><b class="who">${esc(name)}</b><div>${html}</div></div></div>`);
   }
-  const mine = (text) => add(`<div class="msg me"><div class="bubble">${esc(text)}</div></div>`);
+  const mine = (text, voice) => add(`<div class="msg me"><div class="bubble">${voice ? `${ic('mic', 13)} ` : ''}${esc(text)}</div></div>`);
   const sys = (text) => add(`<div class="msg sys"><span>${esc(text)}</span></div>`);
   const block = (html) => add(`<div class="indent">${html}</div>`);
   async function typing(ms) {
@@ -554,9 +556,9 @@ background:var(--glass);color:var(--text);font-family:inherit;font-size:14px;lin
     }
     if (!q.chips.length) input.focus();
   }
-  async function answer(text) {
+  async function answer(text, voice) {
     const q = Q[step];
-    mine(text); setChips([]);
+    mine(text, voice); setChips([]);
     if (q.multi) {
       const t = text.toLowerCase();
       const picked = SOURCES.filter((s) => t.includes(s.toLowerCase()) || t.includes(s.toLowerCase().split(' ').pop()) || (s === 'Gmail' && /e-?mail/.test(t)));
@@ -603,7 +605,7 @@ background:var(--glass);color:var(--text);font-family:inherit;font-size:14px;lin
     return ([
       {label: 'Source founders', icon: 'spark', act: () => run(() => ask('Source founders for me'))},
       {label: 'Who have I been talking to?', icon: 'Gmail', act: () => run(() => ask('Who have I been talking to?'))},
-      {label: '15-second note', icon: 'mic', act: () => run(() => voiceNote(false))},
+      {label: 'Record a note', icon: 'mic', act: () => run(startNote)},
       {label: 'What is my team working on?', icon: 'agent', act: () => run(() => ask('What is my team working on?'))},
     ]);
   }
@@ -618,11 +620,17 @@ background:var(--glass);color:var(--text);font-family:inherit;font-size:14px;lin
     const w = new Set(words(q));
     return (S.leads || []).find((l) => [l.company, l.founder].some((x) => x && (q.includes(x.toLowerCase()) || words(x).some((t) => t.length > 3 && w.has(t)))));
   };
-  async function ask(text) {
-    mine(text);
+  // A note reads like "Just met …" or "Okay so I talked to …" (a few filler words allowed); questions are never notes.
+  const NOTE_VERB = /^(?:[\w'\u2019]+[\s,]+){0,4}?(?:i\s+)?(?:just\s+)?(?:met|talked (?:to|with)|spoke (?:to|with)|chatted with|ran into|caught up with|coffee with|had (?:a )?(?:call|coffee|lunch|dinner|chat) with)\b/i;
+  const isNote = (t) => /^note\s*[:,-]/i.test(t) || (!/\?\s*$/.test(t)
+    && !/^(?:who|what|when|where|why|how|which|did|do|does|have|has|can|could|should|would|is|are|tell|show|find|source|ask|draft)\b/i.test(t) && NOTE_VERB.test(t));
+  async function ask(text, voice) {
+    mine(text, voice);
     const q = text.toLowerCase();
     const p = pending; pending = null; mainChips();
     if (p && /^(yes|yep|yeah|sure|ok|okay|please|go ahead|do it|approve)\b|draft (the )?(\d+ )?repl|approve/.test(q)) return p();
+    if (noteMode || isNote(text.trim())) { noteMode = false; return processNote(text); }
+    if (/^(?:record|take|add|make|start)\s+(?:a\s+)?(?:voice\s+)?note\b/.test(q) && q.split(/\s+/).length <= 5) return startNote();
     await leads();
     const l = find(q);
     if (l && /draft|follow|reply|write/.test(q)) return draft(l);
@@ -630,12 +638,11 @@ background:var(--glass);color:var(--text);font-family:inherit;font-size:14px;lin
     if (l) return detail(l);
     if (/source|find|new founder|deal|pipeline/.test(q)) return sourcing();
     if (/talking|talk to|contacts|conversation|who have i/.test(q)) return contacts();
-    if (/note|record|voice/.test(q)) return voiceNote(true);
     if (/team|working|firm|everyone|board/.test(q)) return team();
     const mate = D.team.find((m) => words(q).includes(m.name.split(' ')[0].toLowerCase()));
     if (mate) return teammate(mate);
     await typing(400);
-    say('I can source founders, show who you have been talking to, take a 15-second note, or check what your team is working on. You can also ask about a company, like Patchbay or Quillstack.');
+    say('I can source founders, show who you have been talking to, record a note about someone you just met, or check what your team is working on. You can also ask about a company, like Patchbay or Quillstack. Tap the mic to talk instead of typing.');
   }
   async function sourcing() {
     await typing(400);
@@ -755,80 +762,15 @@ background:var(--glass);color:var(--text);font-family:inherit;font-size:14px;lin
     say(rows.length ? `${f} has ${rows.length} founders in motion: ${rows.map((r) => `${esc(r.company)} (${esc(r.what.toLowerCase())}, ${esc(r.due)})`).join('; ')}.` : `${f} has no founders in motion right now.`, {id: m.id, name: f});
   }
 
-  // ---------------------------------------------------------------- 15-second note (real dictation)
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  function recordNote() {
-    // Resolves with the note text, or null if it was cancelled. Dictation fills an editable box live; typing works too.
-    const LIMIT = D.mvp.voice_note.seconds, dlg = $('#rec');
-    dlg.className = 'glass rec';
-    dlg.innerHTML = `<div class="small" id="rec-label">15-second note</div><div class="clock" id="clock"><b id="secs">${LIMIT}</b></div>
-      <div class="wave">${Array.from({length: 18}, (_, i) => `<i style="animation-delay:${(i % 6) * 0.12}s"></i>`).join('')}</div>
-      <textarea id="live" rows="4" aria-label="Your note" placeholder="Say who you met, what they're building and what's next."></textarea>
-      <div class="rec-acts"><button class="btn" id="rec-cancel" type="button">Cancel</button>
-      <button class="btn primary" id="rec-save" type="button" disabled>${ic('check', 14)}Save note</button></div>`;
-    dlg.showModal();
-    const live = $('#live'), saveBtn = $('#rec-save'), label = $('#rec-label');
-    let rec = null, listening = false, committed = '', session = '', elapsed = 0, finish;
-    const result = new Promise((res) => { finish = res; });
-    const refresh = () => { saveBtn.disabled = !live.value.trim(); };
-    function stop(msg) {
-      listening = false;
-      if (rec) { const r = rec; rec = null; try { r.stop(); } catch (e) {} }
-      dlg.classList.add('stopped');
-      if (msg) label.textContent = msg;
-    }
-    const close = (text) => { stop(); dlg.close(); finish(text); };
-    saveBtn.onclick = () => close(live.value.trim());
-    $('#rec-cancel').onclick = () => close(null);
-    dlg.oncancel = (ev) => { ev.preventDefault(); close(null); };
-    live.addEventListener('input', () => { if (listening) stop('Stopped listening so you can edit. Save when ready.'); refresh(); });
-    if (!SR) {
-      stop('Dictation needs Chrome, Edge or Safari. Type your note instead.');
-      live.placeholder = 'Who did you meet, what are they building, and what is next?'; live.focus();
-      return result.then((t) => ({text: t, seconds: 0}));
-    }
-    rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || 'en-US';
-    rec.onresult = (e) => {
-      let fin = '', interim = '';
-      for (let i = 0; i < e.results.length; i++) {
-        if (e.results[i].isFinal) fin += ' ' + e.results[i][0].transcript; else interim += ' ' + e.results[i][0].transcript;
-      }
-      session = fin.trim();
-      live.value = [committed, session, interim.trim()].filter(Boolean).join(' ');
-      live.scrollTop = live.scrollHeight; refresh();
-    };
-    rec.onerror = (e) => {
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') stop('Microphone access is blocked. Allow it in your browser, or type your note.');
-      else if (e.error === 'audio-capture') stop('No microphone found. Type your note instead.');
-      else if (e.error === 'network') stop('The speech service is unreachable. Type your note instead.');
-    };
-    // Browsers end recognition after a pause: keep what was heard and restart until time is up.
-    rec.onend = () => {
-      committed = [committed, session].filter(Boolean).join(' '); session = '';
-      if (!listening || !rec) return;
-      try { rec.start(); } catch (e) { setTimeout(() => { if (listening && rec) try { rec.start(); } catch (x) { stop('Dictation stopped. Edit if needed, then save.'); } }, 250); }
-    };
-    try { rec.start(); listening = true; label.textContent = 'Listening'; } catch (e) { stop('Could not start dictation. Type your note instead.'); }
-    (async () => {
-      while (listening && elapsed < LIMIT * 10) {
-        await sleep(100);
-        if (!listening) break;
-        elapsed += 1;
-        $('#secs').textContent = Math.max(0, Math.ceil(LIMIT - elapsed / 10));
-        $('#clock').style.setProperty('--p', (elapsed / (LIMIT * 10)) * 100);
-      }
-      if (listening) stop('Time is up. Edit if needed, then save.');
-    })();
-    return result.then((t) => ({text: t, seconds: Math.round(elapsed / 10)}));
+  // ---------------------------------------------------------------- notes
+  let noteMode = false;
+  async function startNote() {
+    noteMode = true;
+    await typing(250);
+    say(`Go ahead: who did you meet, what are they building, and what's next? ${SR ? 'I\'m listening. Tap send when you\'re done.' : 'Type it below and send.'}`);
+    if (SR && !listening) startDictation(); else input.focus();
   }
-  async function voiceNote(fromChat) {
-    pending = null; mainChips();
-    if (!fromChat) mine('Take a 15-second note');
-    const {text, seconds} = await recordNote();
-    if (!text) { sys('Note discarded'); return; }
-    const dictated = seconds > 0;
-    add(`<div class="msg me"><div class="bubble">${ic(dictated ? 'mic' : 'Event notes', 14)} ${dictated ? `Voice note · 0:${String(seconds).padStart(2, '0')}` : 'Typed note'}<br><i>${esc(text)}</i></div></div>`);
-    if (dictated) await tool('transcribe(voice_note)', `${words(text).length} words, transcribed live in your browser`);
+  async function processNote(text) {
     let r;
     try { r = await post('/api/note', {text}); } catch (e) { say('I could not read that note right now. Please try again.'); return; }
     const x = r.note, who = x.founder || x.company;
@@ -887,16 +829,66 @@ background:var(--glass);color:var(--text);font-family:inherit;font-size:14px;lin
   }
   $('#open-settings').onclick = () => { renderSettings(); $('#settings').showModal(); };
 
-  // ---------------------------------------------------------------- composer
+  // ---------------------------------------------------------------- composer and voice input
+  // Dictation fills the message box live and has no time limit: browsers end recognition after a pause, so it restarts
+  // until you tap the mic again or send. Works for any message, including the interview.
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null, listening = false, baseText = '', finalText = '', dictated = false;
+  const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 168) + 'px'; };
+  function micUI() {
+    $('#mic').classList.toggle('on', listening); $('#composer').classList.toggle('listening', listening);
+    $('#mic').innerHTML = ic(listening ? 'stop' : 'mic', 18);
+    $('#mic').setAttribute('aria-label', listening ? 'Stop listening' : 'Talk instead of typing');
+    $('#listen-hint').textContent = listening ? 'Listening. Talk as long as you like, then tap send, or tap the mic to stop.' : '';
+  }
+  function startDictation() {
+    if (!SR) { sys('Voice input needs Chrome, Edge or Safari. You can type instead.'); input.focus(); return; }
+    listening = true; dictated = true; finalText = '';
+    baseText = input.value.trim() ? input.value.replace(/\s*$/, ' ') : '';
+    rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || 'en-US';
+    rec.onresult = (e) => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) { const sofar = baseText + finalText; finalText += (sofar && !/\s$/.test(sofar) ? ' ' : '') + r[0].transcript.trim(); }
+        else interim += r[0].transcript;
+      }
+      input.value = (baseText + finalText + (interim ? ' ' + interim.trim() : '')).replace(/^\s+/, '');
+      grow(); input.scrollTop = input.scrollHeight;
+    };
+    rec.onerror = (e) => {
+      if (['not-allowed', 'service-not-allowed', 'audio-capture'].includes(e.error)) {
+        stopDictation();
+        sys(e.error === 'audio-capture' ? 'No microphone found. You can type instead.' : 'Microphone access is blocked. Allow it in your browser, or type instead.');
+      } else if (e.error === 'network') { stopDictation(); sys('The speech service is unreachable right now. You can type instead.'); }
+    };
+    rec.onend = () => {
+      if (!listening) return;
+      baseText = (baseText + finalText).replace(/\s*$/, ' '); finalText = '';
+      try { rec.start(); } catch (e) { setTimeout(() => { if (listening) try { rec.start(); } catch (x) { stopDictation(); } }, 250); }
+    };
+    try { rec.start(); } catch (e) { listening = false; }
+    micUI(); input.focus();
+  }
+  function stopDictation() {
+    listening = false;
+    if (rec) { try { rec.stop(); } catch (e) {} rec = null; }
+    micUI();
+  }
+  $('#mic').onclick = () => (listening ? stopDictation() : startDictation());
+  input.addEventListener('input', () => { grow(); if (listening) { baseText = input.value.replace(/\s*$/, ' '); finalText = ''; } });
+  input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $('#composer').requestSubmit(); } });
   $('#composer').addEventListener('submit', (ev) => {
     ev.preventDefault();
-    const text = input.value.trim(); if (!text || busy) return;
-    input.value = '';
-    if (S.profile) run(() => ask(text));
+    if (busy) return;
+    const voice = dictated;
+    stopDictation(); dictated = false;
+    const text = input.value.trim(); if (!text) return;
+    input.value = ''; grow();
+    if (S.profile) run(() => ask(text, voice));
     else if (step >= Q.length - 1 && S.answers[Q[Q.length - 1].key] != null) run(build);
-    else if (step >= 0) run(() => answer(text));
+    else if (step >= 0) run(() => answer(text, voice));
   });
-  $('#mic').onclick = () => { if (!S.profile) { sys('Finish the interview first, then your agent can take notes.'); return; } run(() => voiceNote(false)); };
 
   // ---------------------------------------------------------------- start
   if (S.profile) {
