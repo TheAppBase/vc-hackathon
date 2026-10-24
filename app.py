@@ -25,21 +25,25 @@ from functools import wraps  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from flask import Flask, jsonify, request, session  # noqa: E402
+from werkzeug.security import check_password_hash, generate_password_hash  # noqa: E402
 
 import engine  # noqa: E402
 import guard  # noqa: E402
 import integrations as ix  # noqa: E402
 import store  # noqa: E402
+from env import env, scrub  # noqa: E402
 
 app = Flask(__name__)
 # Sessions must survive across serverless instances, so the key has to be stable. Falls back to one derived from the
 # Blob token (also a server secret) so a deploy works before SECRET_KEY is set.
-app.secret_key = os.getenv("SECRET_KEY") or (hashlib.sha256(("last-touch:" + store.TOKEN).encode()).hexdigest() if store.TOKEN
+app.secret_key = env("SECRET_KEY") or (hashlib.sha256(("last-touch:" + store.TOKEN).encode()).hexdigest() if store.TOKEN
                                              else secrets.token_hex(32))
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=bool(os.getenv("VERCEL")),
                   PERMANENT_SESSION_LIFETIME=dt.timedelta(days=30))
 
 USER_RE = re.compile(r"^[a-z0-9_.-]{2,30}$")
+MIN_PASSWORD = 8
+MAX_FAILS, LOCK_MINUTES = 8, 15
 INTERVIEW = [
     {"key": "role", "q": "Hi {name}, I'm your new agent. After every event or meeting, record a quick note and I'll keep track of "
                          "who you met and what's next. First, what's your role?",
@@ -112,15 +116,19 @@ def public(user: dict) -> dict:
 def current() -> dict | None:
     u = session.get("u")
     user = load_user(u) if u else None
-    if u and not user:
+    # A password change bumps pw_ver, which signs out every other device.
+    if u and (not user or session.get("pv", 0) != user.get("pw_ver", 0)):
         session.clear()
+        return None
     return user
 
 
-def start_session(u: str):
+def start_session(user: dict):
+    u = user["username"]
     session.clear()
     session.permanent = True
     session["u"] = u
+    session["pv"] = user.get("pw_ver", 0)
     session["sid"] = f"lt-{u}-{secrets.token_hex(6)}"  # one PRISM session per sign-in, so traces group into a conversation
 
 
@@ -380,7 +388,7 @@ def api_note_save(user):
             act["status"] = "done"
             act["akta"] = note.get("akta")
         except Exception as e:
-            act["status"], act["reason"] = "failed", f"Could not save: {str(e)[:160]}"
+            act["status"], act["reason"] = "failed", scrub(f"Could not save: {e}")[:180]
         if act["status"] == "done" and ix.ROUNDTABLE.live:
             act["roundtable"] = bool(ix.ROUNDTABLE.save_note(f"Last Touch · {describe_rec(extracted) if (extracted.get('founder') or extracted.get('company')) else 'Note'}",
                                                              note_markdown(user, note), f"lt-{user['username']}-{act['id']}"))
@@ -415,34 +423,90 @@ def api_username(u):
     return jsonify({"valid": True, "available": not exists, "exists": exists})
 
 
+def password_problem(pw: str) -> str | None:
+    if len(pw) < MIN_PASSWORD:
+        return f"Use at least {MIN_PASSWORD} characters for your password."
+    if len(pw) > 200:
+        return "That password is too long."
+    return None
+
+
+def set_password(user: dict, pw: str):
+    user["password"] = generate_password_hash(pw)
+    user["pw_ver"] = user.get("pw_ver", 0) + 1
+    user.pop("login", None)
+
+
 @app.post("/api/signup")
 def api_signup():
     b = request.get_json(silent=True) or {}
-    name, u = " ".join(str(b.get("name") or "").split())[:60], norm(b.get("username"))
+    name, u, pw = " ".join(str(b.get("name") or "").split())[:60], norm(b.get("username")), str(b.get("password") or "")
     if not name:
         return jsonify({"error": "Enter your name."}), 400
     if not USER_RE.match(u):
         return jsonify({"error": "Use 2 to 30 letters, numbers, dots, dashes or underscores."}), 400
+    if password_problem(pw):
+        return jsonify({"error": password_problem(pw)}), 400
     user = {"username": u, "name": name, "created_at": now(), "team": [], "settings": {"mode": "ask"}}
+    set_password(user, pw)
     try:
         store.put(f"users/{u}.json", user, overwrite=False)
     except store.Exists:
         return jsonify({"error": f"@{u} is taken."}), 409
-    start_session(u)
+    start_session(user)
     return jsonify({"user": public(user)})
 
 
 @app.post("/api/signin")
 def api_signin():
     b = request.get_json(silent=True) or {}
-    name, u = str(b.get("name") or ""), norm(b.get("username"))
+    u, pw = norm(b.get("username")), str(b.get("password") or "")
     user = load_user(u)
     if not user:
-        return jsonify({"error": f"No account called @{u}."}), 404
-    if " ".join(name.lower().split()) != " ".join(user["name"].lower().split()):
-        return jsonify({"error": "That name doesn't match this username."}), 403
-    start_session(u)
+        return jsonify({"error": "Wrong username or password."}), 403
+    login = user.get("login") or {}
+    locked = login.get("locked_until")
+    if locked and _ts(locked) > dt.datetime.now(dt.timezone.utc):
+        return jsonify({"error": f"Too many wrong passwords. Try again after {_ts(locked).strftime('%H:%M')} UTC."}), 429
+    if not user.get("password"):
+        # Accounts made before passwords existed: prove it's you with the account's name, then choose a password.
+        name = str(b.get("name") or "")
+        if not name:
+            return jsonify({"error": "setup", "message": "This account doesn't have a password yet. Enter the name on the account "
+                                                         "and choose a password."}), 409
+        if " ".join(name.lower().split()) != " ".join(user["name"].lower().split()) or password_problem(pw):
+            return jsonify({"error": password_problem(pw) or "That name doesn't match this username."}), 403
+        set_password(user, pw)
+        save_user(user)
+        start_session(user)
+        return jsonify({"user": public(user)})
+    if not check_password_hash(user["password"], pw):
+        fails = login.get("fails", 0) + 1
+        user["login"] = {"fails": fails}
+        if fails >= MAX_FAILS:
+            user["login"] = {"fails": 0, "locked_until": (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=LOCK_MINUTES)).isoformat()}
+        save_user(user)
+        return jsonify({"error": "Wrong username or password."}), 403
+    if login:
+        user.pop("login", None)
+        save_user(user)
+    start_session(user)
     return jsonify({"user": public(user)})
+
+
+@app.post("/api/password")
+@login_required
+def api_password(user):
+    b = request.get_json(silent=True) or {}
+    if user.get("password") and not check_password_hash(user["password"], str(b.get("current") or "")):
+        return jsonify({"error": "Your current password is wrong."}), 403
+    pw = str(b.get("new") or "")
+    if password_problem(pw):
+        return jsonify({"error": password_problem(pw)}), 400
+    set_password(user, pw)
+    save_user(user)
+    start_session(user)  # keep this device signed in; every other device is signed out
+    return jsonify({"ok": True})
 
 
 @app.post("/api/signout")

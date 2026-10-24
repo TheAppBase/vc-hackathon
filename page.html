@@ -99,7 +99,11 @@ max-height:168px;line-height:1.45}
 .field{display:block;margin:0 0 12px}.field span{display:block;font-size:12.5px;color:var(--muted);margin:0 0 4px;font-weight:600}
 .field input{width:100%;border:1px solid var(--edge);background:var(--glass);border-radius:12px;padding:10px 12px;font:inherit;color:var(--text);outline:none}
 .field input:focus{border-color:var(--blue)}
-.hint.ok{color:var(--green)}.wide{width:100%;justify-content:center;padding:10px 14px;font-size:14px}
+.hint.ok{color:var(--green)}.hint:empty{display:none}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;border-radius:12px;background:var(--glass);border:1px solid var(--edge);margin:0 0 14px}
+.tab{border:0;background:transparent;border-radius:9px;padding:7px 10px;font-weight:600;font-size:13.5px;color:var(--muted)}
+.tab.on{background:var(--glass-strong);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.12)}
+.pw{display:grid;gap:6px;margin-top:6px}.pw input{width:100%;border:1px solid var(--edge);background:var(--glass);border-radius:10px;padding:8px 10px;font:inherit;font-size:13.5px;color:var(--text);outline:none}.wide{width:100%;justify-content:center;padding:10px 14px;font-size:14px}
 .action{max-width:600px;border-radius:16px;padding:12px 14px;background:var(--glass-strong);border:1px solid var(--edge);animation:in .25s ease-out}
 .action .th{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted);flex-wrap:wrap}.action .th .ic{color:var(--orange)}
 .action .th b{color:var(--text);font-size:13px}.action .st{margin-left:auto;font-weight:600}
@@ -119,12 +123,14 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
 <textarea id="input" rows="1" autocomplete="off" placeholder="Record or type a note, or ask your agent" aria-label="Message"></textarea><button class="round send" aria-label="Send" id="send"></button></form></div></div>
 <button class="corner glass" id="open-settings" aria-label="Settings" hidden></button>
 <dialog class="glass sheet" id="settings"></dialog>
-<div class="auth" id="auth" hidden><form class="card glass" id="auth-form" autocomplete="off">
+<div class="auth" id="auth" hidden><form class="card glass" id="auth-form" autocomplete="on">
 <h1>Last Touch</h1><p>Your personal sourcing agent. Record a quick note after every event; it keeps track of who you met and what's next, and shares it with your team.</p>
-<label class="field"><span>Your name</span><input id="auth-name" placeholder="Your name" maxlength="60" required></label>
-<label class="field"><span>Username</span><input id="auth-user" placeholder="your-username" maxlength="31" required autocapitalize="off" spellcheck="false"></label>
-<p class="hint" id="auth-hint">Pick a username. Teammates add you with it.</p>
-<button class="btn primary wide" id="auth-go" disabled>Continue</button></form></div>
+<div class="tabs" role="tablist"><button type="button" role="tab" class="tab on" id="tab-in" aria-selected="true">Sign in</button><button type="button" role="tab" class="tab" id="tab-up" aria-selected="false">Create account</button></div>
+<label class="field" id="f-name" hidden><span>Your name</span><input id="auth-name" placeholder="Your name" maxlength="60" autocomplete="name"></label>
+<label class="field"><span>Username</span><input id="auth-user" placeholder="your-username" maxlength="31" required autocapitalize="off" spellcheck="false" autocomplete="username"></label>
+<label class="field"><span>Password</span><input id="auth-pass" type="password" placeholder="Password" maxlength="200" required autocomplete="current-password"></label>
+<p class="hint" id="auth-hint"></p>
+<button class="btn primary wide" id="auth-go">Sign in</button></form></div>
 <script type="application/json" id="data">__DATA__</script>
 <script>
 (function () {
@@ -444,6 +450,10 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     const draw = () => {
       dlg.innerHTML = `<div class="sheet-head"><h2>Settings</h2><button class="round mic" id="close-settings" aria-label="Close">${ic('x', 16)}</button></div>
       <h3>Account</h3><ul class="list"><li>${agentAvatar({id: ME.username, name: ME.name})}<span><b>${esc(ME.name)}</b><small>@${esc(ME.username)}</small></span><button class="rm end" id="signout">Sign out</button></li></ul>
+      <form class="pw" id="pw-form" autocomplete="on"><input type="text" name="username" value="${esc(ME.username)}" autocomplete="username" hidden>
+        <input type="password" id="pw-cur" placeholder="Current password" autocomplete="current-password" aria-label="Current password">
+        <input type="password" id="pw-new" placeholder="New password (8+ characters)" autocomplete="new-password" aria-label="New password">
+        <button class="btn">Change password</button></form><p class="hint" id="pw-hint"></p>
       <h3>Your agent</h3>${p ? `<ul class="list"><li>${agentAvatar()}<span><b>${esc(ME.first)}'s agent</b><small>${esc(p.sectors.join(', '))} · ${esc(p.stages.join(', '))}</small></span></li></ul>
         <button class="btn" id="redo">Redo the interview</button>` : '<p class="small">Finish the interview in the chat to build your agent.</p>'}
       <h3>Safety</h3><div class="seg">
@@ -462,6 +472,14 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     const wire = () => {
       $('#close-settings').onclick = () => dlg.close();
       $('#signout').onclick = async () => { await api('/api/signout', {}); location.href = '/'; };
+      $('#pw-form').onsubmit = async (ev) => {
+        ev.preventDefault();
+        const h = $('#pw-hint');
+        try {
+          await api('/api/password', {current: $('#pw-cur').value, new: $('#pw-new').value});
+          $('#pw-cur').value = $('#pw-new').value = ''; h.textContent = 'Password changed. Other devices are signed out.'; h.className = 'hint ok';
+        } catch (e) { if (!(e instanceof NeedsSignin)) { h.textContent = e.message; h.className = 'hint err'; } }
+      };
       const redo = $('#redo'); if (redo) redo.onclick = () => { dlg.close(); run(startInterview); };
       dlg.querySelectorAll('input[name=mode]').forEach((r) => { r.onchange = async () => {
         try { ME = (await api('/api/settings', {mode: r.value})).user; sys(ME.mode === 'auto' ? 'Auto mode: PRISM watches the agent and reviews every note.' : 'Ask mode: PRISM is off.'); }
@@ -530,37 +548,64 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     if (step >= 0) run(() => answer(text)); else run(() => ask(text, wasDictated ? 'dictation' : 'typed'));
   });
 
-  // ---------------------------------------------------------------- sign in
+  // ---------------------------------------------------------------- sign in / create account
   function showAuth() {
     $('#app').hidden = true; $('#open-settings').hidden = true; $('#auth').hidden = false;
-    $('#auth-name').focus();
+    (authMode === 'up' ? $('#auth-name') : $('#auth-user')).focus();
   }
-  let check = null, authState = null;
-  const authUser = $('#auth-user'), authHint = $('#auth-hint'), authGo = $('#auth-go');
-  authUser.oninput = () => {
-    clearTimeout(check); authState = null; authGo.disabled = true;
+  let authMode = 'in', check = null, authState = null, needsSetup = false;
+  const authUser = $('#auth-user'), authHint = $('#auth-hint'), authGo = $('#auth-go'), authPass = $('#auth-pass');
+  const hint = (text, cls) => { authHint.textContent = text || ''; authHint.className = 'hint' + (cls ? ' ' + cls : ''); };
+  function setMode(m) {
+    authMode = m; needsSetup = false;
+    $('#tab-in').classList.toggle('on', m === 'in'); $('#tab-up').classList.toggle('on', m === 'up');
+    $('#tab-in').setAttribute('aria-selected', m === 'in'); $('#tab-up').setAttribute('aria-selected', m === 'up');
+    $('#f-name').hidden = m === 'in'; $('#auth-name').required = m === 'up';
+    authPass.autocomplete = m === 'up' ? 'new-password' : 'current-password';
+    authPass.placeholder = m === 'up' ? 'At least 8 characters' : 'Password';
+    authGo.textContent = m === 'up' ? 'Create account' : 'Sign in'; authGo.disabled = false;
+    hint(''); if (m === 'up') checkUsername(); showAuth();
+  }
+  $('#tab-in').onclick = () => setMode('in');
+  $('#tab-up').onclick = () => setMode('up');
+  function checkUsername() {
+    clearTimeout(check); authState = null;
+    if (authMode !== 'up') return;
     const u = authUser.value.trim().replace(/^@/, '').toLowerCase();
-    if (!u) { authHint.textContent = 'Pick a username. Teammates add you with it.'; authHint.className = 'hint'; authGo.textContent = 'Continue'; return; }
-    authHint.textContent = 'Checking…'; authHint.className = 'hint';
+    if (!u) { hint('Pick a username. Teammates add you with it.'); return; }
+    hint('Checking…');
     check = setTimeout(async () => {
       const r = await api('/api/username/' + encodeURIComponent(u));
-      if (authUser.value.trim().replace(/^@/, '').toLowerCase() !== u) return;
+      if (authMode !== 'up' || authUser.value.trim().replace(/^@/, '').toLowerCase() !== u) return;
       authState = r;
-      if (!r.valid) { authHint.textContent = r.message; authHint.className = 'hint err'; authGo.textContent = 'Continue'; return; }
-      authGo.disabled = false;
-      if (r.available) { authHint.textContent = `@${u} is available.`; authHint.className = 'hint ok'; authGo.textContent = 'Create account'; }
-      else { authHint.textContent = `@${u} exists. Enter the name on that account to sign in.`; authHint.className = 'hint'; authGo.textContent = 'Sign in'; }
+      if (!r.valid) hint(r.message, 'err');
+      else if (r.available) hint(`@${u} is available.`, 'ok');
+      else hint(`@${u} is taken. Pick another, or sign in if it's yours.`, 'err');
     }, 250);
-  };
+  }
+  authUser.oninput = checkUsername;
+  authPass.oninput = () => { if (/password/i.test(authHint.textContent) && authHint.classList.contains('err')) authMode === 'up' ? checkUsername() : hint(''); };
   $('#auth-form').onsubmit = async (ev) => {
     ev.preventDefault();
-    if (!authState || !authState.valid) return;
-    const body = {name: $('#auth-name').value.trim(), username: authUser.value.trim()};
+    const body = {username: authUser.value.trim(), password: authPass.value};
+    if (authMode === 'up') {
+      if (authState && (!authState.valid || !authState.available)) return;
+      if (authPass.value.length < 8) { hint('Use at least 8 characters for your password.', 'err'); return; }
+      body.name = $('#auth-name').value.trim();
+    } else if (needsSetup) body.name = $('#auth-name').value.trim();
     authGo.disabled = true;
     try {
-      const r = await api(authState.available ? '/api/signup' : '/api/signin', body);
-      ME = r.user; start();
-    } catch (e) { authHint.textContent = e.message; authHint.className = 'hint err'; authGo.disabled = false; }
+      const r = await api(authMode === 'up' ? '/api/signup' : '/api/signin', body);
+      authPass.value = ''; ME = r.user; start();
+    } catch (e) {
+      authGo.disabled = false;
+      if (e.code === 'setup') {
+        // An account made before passwords: confirm the name on it and choose a password now.
+        needsSetup = true; $('#f-name').hidden = false; $('#auth-name').required = true;
+        authPass.autocomplete = 'new-password'; authPass.placeholder = 'Choose a password (8+ characters)';
+        authGo.textContent = 'Set password and sign in'; hint(e.message); $('#auth-name').focus();
+      } else hint(e.message, 'err');
+    }
   };
 
   // ---------------------------------------------------------------- start

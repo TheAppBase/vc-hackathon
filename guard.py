@@ -13,6 +13,7 @@ import json
 import re
 import time
 
+from env import scrub
 from integrations import TRACER
 
 SECRET_RES = [
@@ -97,7 +98,7 @@ def review(agent: str, agent_id: str, session_id: str, action: dict, wait_s: flo
         res = pt.submit_trajectory(steps, agent_name=agent, agent_id=agent_id, conversation_id=session_id,
                                    request_id=action["id"], final_status="success")
     except Exception as e:
-        return {"decision": "unknown", "reason": f"PRISM error: {str(e)[:120]}"}
+        return {"decision": "unknown", "reason": scrub(f"PRISM error: {e}")[:140]}
     tid = (res or {}).get("id") or (res or {}).get("trajectory_id")
     if not tid:
         return {"decision": "unknown", "reason": "PRISM did not accept the review request"}
@@ -107,7 +108,7 @@ def review(agent: str, agent_id: str, session_id: str, action: dict, wait_s: flo
         try:
             decision, why = _decide(pt.get_trajectory_evaluation(tid))
         except Exception as e:
-            decision, why = "unknown", f"PRISM error: {str(e)[:120]}"
+            decision, why = "unknown", scrub(f"PRISM error: {e}")[:140]
         if decision in ("allow", "block"):
             break
         time.sleep(1.5)

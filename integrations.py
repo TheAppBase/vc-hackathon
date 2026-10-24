@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -17,10 +16,11 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx
 
 import store
+from env import env, scrub
 
-PRISM_HOST = os.getenv("PRISMTRACE_HOST", "https://api.prism.blockconvey.com").rstrip("/")
+PRISM_HOST = env("PRISMTRACE_HOST", default="https://api.prism.blockconvey.com").rstrip("/")
 # The project id is not a secret (it comes from PRISM's setup brief); the API key is, and only lives in the environment.
-PRISM_PROJECT = os.getenv("PRISMTRACE_PROJECT_ID") or os.getenv("PRISM_PROJECT_ID") or "b47943ae-502e-4b6e-baa6-389d4ca90449"
+PRISM_PROJECT = env("PRISMTRACE_PROJECT_ID", "PRISM_PROJECT_ID", default="b47943ae-502e-4b6e-baa6-389d4ca90449")
 
 
 def _slug(s: str) -> str:
@@ -32,7 +32,7 @@ class Tracer:
     """PRISM by Block Convey: model calls (trace_llm), tool calls (trajectories), and the setup doctor."""
 
     def __init__(self):
-        self.key = os.getenv("PRISMTRACE_API_KEY") or os.getenv("PRISM_API_KEY")
+        self.key = env("PRISMTRACE_API_KEY", "PRISM_API_KEY")
         self.project = PRISM_PROJECT
         self.live = bool(self.key)
         self.error = None
@@ -45,7 +45,7 @@ class Tracer:
 
                 self.pt = PRISMtrace(api_key=self.key, host=PRISM_HOST, project_id=self.project)
             except Exception as e:  # pragma: no cover
-                self.live, self.error = False, f"PRISM init failed: {e}"
+                self.live, self.error = False, scrub(f"PRISM init failed: {e}")
 
     def llm(self, model, messages, output, latency_ms, usage, agent_name, session_id=None, agent_id=None):
         if not self.pt:
@@ -63,7 +63,7 @@ class Tracer:
                 session_id=session_id,
             )
         except Exception as e:
-            self.error = f"trace_llm failed: {e}"
+            self.error = scrub(f"trace_llm failed: {e}")
 
     def tool(self, agent_name: str, agent_id: str, session_id: str, tool: str, input_summary: str, output_summary: str,
              latency_ms: int, status: str = "success"):
@@ -76,14 +76,14 @@ class Tracer:
             self.pt.submit_trajectory([step], agent_name=agent_name, agent_id=agent_id, conversation_id=session_id,
                                       final_status="error" if status == "error" else "success", async_send=True)
         except Exception as e:
-            self.error = f"submit_trajectory failed: {e}"
+            self.error = scrub(f"submit_trajectory failed: {e}")
 
     def end_session(self, session_id: str, agent_id: str, agent_name: str):
         if self.pt and session_id:
             try:
                 self.pt.end_session(session_id, reason="signed out", agent_id=agent_id, agent_name=agent_name)
             except Exception as e:
-                self.error = f"end_session failed: {e}"
+                self.error = scrub(f"end_session failed: {e}")
 
     def flush(self):
         """Serverless functions freeze after the response, so send queued traces before the request ends."""
@@ -105,16 +105,16 @@ class Tracer:
             out["credential"] = "ok" if r.status_code == 200 else "fail"
             if r.status_code != 200:
                 try:
-                    out["detail"] = str(r.json().get("detail") or r.text)[:200]
+                    out["detail"] = scrub(r.json().get("detail") or r.text)[:200]
                 except ValueError:
-                    out["detail"] = r.text[:200]
+                    out["detail"] = scrub(r.text)[:200]
             else:
                 d = httpx.get(f"{PRISM_HOST}/api/setup-doctor", params={"project_id": self.project}, headers=headers, timeout=10)
                 if d.status_code == 200:
                     j = d.json()
                     out.update(live=bool(j.get("live_connected")), blocked_step=j.get("blocked_step"), overall=j.get("overall"))
         except httpx.HTTPError as e:
-            out.update(credential="unreachable", detail=str(e)[:200])
+            out.update(credential="unreachable", detail=scrub(e)[:200])
         with self._lock:
             self._status = (time.time(), out)
         return out
@@ -128,9 +128,9 @@ class LLM:
     """Nicrron API: OpenAI-compatible endpoint (https://api.nicrron.ai/v1)."""
 
     def __init__(self):
-        self.key = os.getenv("NICRRON_API_KEY")
-        self.model = os.getenv("NICRRON_MODEL", "nicrron/auto")
-        self.base = os.getenv("NICRRON_BASE_URL", "https://api.nicrron.ai/v1")
+        self.key = env("NICRRON_API_KEY")
+        self.model = env("NICRRON_MODEL", default="nicrron/auto")
+        self.base = env("NICRRON_BASE_URL", default="https://api.nicrron.ai/v1")
         self.live = bool(self.key)
         self.error = None
         self.client = None
@@ -140,7 +140,7 @@ class LLM:
 
                 self.client = OpenAI(api_key=self.key, base_url=self.base, timeout=30)
             except Exception as e:  # pragma: no cover
-                self.live, self.error = False, f"Nicrron init failed: {e}"
+                self.live, self.error = False, scrub(f"Nicrron init failed: {e}")
 
     def chat(self, system: str, user: str, agent_name: str, max_tokens: int = 700, session_id=None, trace: bool = True,
              agent_id=None) -> str | None:
@@ -151,9 +151,9 @@ class LLM:
         try:
             r = self.client.chat.completions.create(model=self.model, messages=messages, temperature=0.2, max_tokens=max_tokens)
         except Exception as e:
-            self.error = f"Nicrron call failed: {e}"
+            self.error = scrub(f"Nicrron call failed: {e}")
             if trace:
-                TRACER.llm(self.model, messages, f"[error] {e}"[:300], int((time.time() - t0) * 1000), None, agent_name,
+                TRACER.llm(self.model, messages, scrub(f"[error] {e}")[:300], int((time.time() - t0) * 1000), None, agent_name,
                            session_id, agent_id)
             return None
         out = r.choices[0].message.content or ""
@@ -211,10 +211,10 @@ class Akta:
     TTL = 7 * 24 * 3600
 
     def __init__(self):
-        self.key = os.getenv("AKTA_API_KEY")
-        self.base = os.getenv("AKTA_BASE_URL", "https://api.akta.pro/api").rstrip("/")
+        self.key = env("AKTA_API_KEY")
+        self.base = env("AKTA_BASE_URL", default="https://api.akta.pro/api").rstrip("/")
         self.live = bool(self.key)
-        self.use_paid = os.getenv("AKTA_USE_PAID", "1") == "1"
+        self.use_paid = env("AKTA_USE_PAID", default="1") == "1"
         self.error = None
 
     def _req(self, method: str, path: str, params=None, body=None):
@@ -234,7 +234,7 @@ class Akta:
             r.raise_for_status()
             val = r.json()
         except Exception as e:
-            self.error = f"Akta {path} failed: {str(e)[:160]}"
+            self.error = scrub(f"Akta {path} failed: {e}")[:200]
             return None
         try:
             store.put(ck, {"t": time.time(), "v": val})
@@ -290,9 +290,9 @@ class Roundtable:
     """
 
     def __init__(self):
-        self.url = os.getenv("ROUNDTABLE_MCP_URL")
-        self.token = os.getenv("ROUNDTABLE_MCP_TOKEN")
-        self.folder = os.getenv("ROUNDTABLE_FOLDER", "last-touch")
+        self.url = env("ROUNDTABLE_MCP_URL")
+        self.token = env("ROUNDTABLE_MCP_TOKEN")
+        self.folder = env("ROUNDTABLE_FOLDER", default="last-touch")
         self.live = bool(self.url and self.token)
         self.error = None if self.live or not self.url else "ROUNDTABLE_MCP_TOKEN is missing (the MCP URL needs its bearer key)"
         self.session = None
@@ -337,10 +337,10 @@ class Roundtable:
                 res = self._rpc("tools/call", {"name": "save_note", "arguments": {"request": {
                     "kind": "note", "folder": self.folder, "title": title, "content": markdown, "request_id": request_id}}}) or {}
             except Exception as e:
-                self.error, self.session = f"Roundtable save_note failed: {str(e)[:160]}", None
+                self.error, self.session = scrub(f"Roundtable save_note failed: {e}")[:200], None
                 return None
         if res.get("isError"):
-            self.error = "Roundtable save_note failed: " + " ".join(c.get("text", "") for c in res.get("content", []))[:160]
+            self.error = scrub("Roundtable save_note failed: " + " ".join(c.get("text", "") for c in res.get("content", [])))[:160]
             return None
         data = res.get("structuredContent") or {}
         if isinstance(data, dict) and list(data) == ["result"]:

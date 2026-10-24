@@ -19,9 +19,11 @@ from urllib.parse import quote
 
 import httpx
 
+from env import env
+
 API = "https://blob.vercel-storage.com"
 API_VERSION = "12"
-TOKEN = os.getenv("BLOB_READ_WRITE_TOKEN") or os.getenv("VERCEL_BLOB_READ_WRITE_TOKEN") or ""
+TOKEN = env("BLOB_READ_WRITE_TOKEN", "VERCEL_BLOB_READ_WRITE_TOKEN")
 LOCAL = Path(os.getenv("LAST_TOUCH_RUNTIME") or ("/tmp/last-touch" if os.getenv("VERCEL") else Path(__file__).parent / "runtime")) / "store"
 _lock = threading.Lock()
 
