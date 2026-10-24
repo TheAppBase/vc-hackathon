@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import copy  # noqa: E402
-import datetime as dt  # noqa: E402
 import json  # noqa: E402
 import threading  # noqa: E402
 from html import escape  # noqa: E402
@@ -135,28 +134,21 @@ radial-gradient(70% 45% at 50% 0%,rgba(255,255,255,.35),transparent 70%)}
 a{color:inherit;text-decoration:none}.ic{flex:none;vertical-align:-3px}
 .glass{background:var(--glass);border:1px solid var(--edge);border-radius:22px;box-shadow:var(--shadow),inset 0 1px 0 rgba(255,255,255,.55);
 -webkit-backdrop-filter:blur(28px) saturate(180%);backdrop-filter:blur(28px) saturate(180%)}
-.menubar{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:18px;padding:7px 20px;font-size:13px;
-background:rgba(255,255,255,.28);border-bottom:1px solid var(--edge);-webkit-backdrop-filter:blur(30px) saturate(180%);backdrop-filter:blur(30px) saturate(180%)}
-@media (prefers-color-scheme:dark){.menubar{background:rgba(20,26,28,.45)}}
-.menubar .brand{display:flex;align-items:center;gap:8px;font-weight:700}.menubar .grow{flex:1}
-.status{display:flex;gap:14px;flex-wrap:wrap}.status span{display:flex;align-items:center;gap:6px;color:var(--muted)}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--warm);box-shadow:0 0 0 2px rgba(255,149,0,.18)}
 .dot.live{background:var(--ok);box-shadow:0 0 0 2px rgba(52,199,89,.2)}
 .page{max-width:1240px;margin:0 auto;padding:26px 24px 140px}
-.hero{padding:28px 30px;display:grid;grid-template-columns:1fr auto;gap:20px;align-items:end}
-.hero h1{font-size:44px;line-height:1.05;letter-spacing:-.02em;margin:0 0 10px;font-weight:700}
-.hero p{margin:0;max-width:720px;color:var(--muted);font-size:16px}.hero p b{color:var(--text)}
-.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
-.chip{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:999px;font-size:13px;background:var(--glass-strong);border:1px solid var(--edge)}
+.hero{padding:28px 6px 22px;display:grid;grid-template-columns:1fr auto;gap:20px;align-items:end}
+.hero h1{font-size:40px;line-height:1.05;letter-spacing:-.025em;margin:0 0 6px;font-weight:700}
+.hero p{margin:0;color:var(--muted);font-size:16px}
 .btn{display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border-radius:999px;font-weight:600;font-size:14px;
 background:var(--glass-strong);border:1px solid var(--edge);box-shadow:inset 0 1px 0 rgba(255,255,255,.6),0 4px 14px rgba(16,44,52,.12);transition:transform .15s}
 .btn:hover{transform:translateY(-1px)}.btn.primary{background:linear-gradient(180deg,#3d9bff,#0a84ff);color:#fff;border-color:rgba(255,255,255,.35)}
 .btn.off{opacity:.45;pointer-events:none}.actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
-.metrics{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin:18px 0}
-.metric{padding:16px 18px;border-radius:20px}.metric .k{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
-.metric .v{font-size:34px;font-weight:700;letter-spacing:-.02em;margin-top:4px}
+.metrics{display:grid;grid-template-columns:repeat(6,1fr);margin:0 0 16px;padding:14px 8px}
+.metric{text-align:center;padding:2px 6px}.metric+.metric{border-left:1px solid var(--line)}
+.metric .k{font-size:12.5px;color:var(--muted)}.metric .v{font-size:26px;font-weight:600;letter-spacing:-.02em}
 .metric.hot .ic{color:var(--hot)}.metric.park .ic{color:var(--park)}.metric.warm .ic{color:var(--warm)}.metric.pass .ic{color:var(--pass)}
-.section{padding:22px 24px}.section h2{margin:0 0 4px;font-size:20px;display:flex;align-items:center;gap:10px}
+.section{padding:22px 24px}.section h2{margin:0 0 16px;font-size:19px;font-weight:600;letter-spacing:-.01em}
 .sub{color:var(--muted);font-size:13px;margin:0 0 16px}
 .cols{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
 .card{background:var(--glass-strong);border:1px solid var(--edge);border-radius:18px;padding:16px 18px;box-shadow:inset 0 1px 0 rgba(255,255,255,.5)}
@@ -197,9 +189,9 @@ box-shadow:inset 0 1px 0 rgba(255,255,255,.6),0 4px 12px rgba(16,44,52,.15)}
 .dock a .lbl{position:absolute;bottom:72px;white-space:nowrap;font-size:12px;padding:4px 10px;border-radius:8px;opacity:0;pointer-events:none;
 background:var(--glass-strong);border:1px solid var(--edge);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);transition:opacity .15s}
 .dock a:hover .lbl{opacity:1}
-@media (max-width:980px){.metrics{grid-template-columns:repeat(3,1fr)}.cols,.split{grid-template-columns:1fr}.hero{grid-template-columns:1fr}.actions{justify-content:flex-start}}
-@media (max-width:620px){.page{padding:16px 16px 120px}.hero{padding:22px 20px}.hero h1{font-size:32px}.section{padding:18px 16px}
-.metric .v{font-size:26px}.metric{padding:12px 14px}.status{display:none}.dock{gap:2px;padding:6px;bottom:10px}
+@media (max-width:980px){.metrics{grid-template-columns:repeat(3,1fr);row-gap:12px}.metric:nth-child(4){border-left:0}.cols,.split{grid-template-columns:1fr}.hero{grid-template-columns:1fr}.actions{justify-content:flex-start}}
+@media (max-width:620px){.page{padding:16px 16px 120px}.hero{padding:22px 20px}.hero h1{font-size:32px}.hero{padding:18px 4px 16px}.section{padding:18px 16px}
+.metric .v{font-size:22px}.dock{gap:2px;padding:6px;bottom:10px}
 .dock a{width:50px;height:50px}.dock a .tile{width:44px;height:44px;border-radius:12px}}
 """
 
@@ -208,8 +200,7 @@ def tab_today(state, leads, members):
     cols = []
     for mid in ["ava", "ben", "cara"]:
         mem = members[mid]
-        h = [f"<div class='card'><div class='who'>{avatar(mem)}<div><b>{e(mem['name'])}</b><small>{e(mem['role'])} · "
-             f"{e(mem['persona'])}</small></div></div>"]
+        h = [f"<div class='card'><div class='who'>{avatar(mem)}<div><b>{e(mem['name'])}</b><small>{e(mem['role'])}</small></div></div>"]
         for n in leads:
             if n.get("prior") and n["prior"]["who"] == mid:
                 h.append(f"<div class='callout'>{icon('alert', 16)}<div>You met <b>{e(n['founder'])}</b> ({e(n['company'])}) "
@@ -223,7 +214,7 @@ def tab_today(state, leads, members):
             h.append(f"<div class='act'><div class='t'>{tag(n['status'])}<b>{e(label)}</b>: {e(a['what'])}</div>"
                      f"<div class='meta'>{icon('clock', 13)}{e(when)}</div>")
             if a.get("draft"):
-                h.append(f"<details><summary>{icon('send', 13)}Draft message (not sent)</summary><pre>{e(a['draft'])}</pre></details>")
+                h.append(f"<details><summary>{icon('send', 13)}Draft</summary><pre>{e(a['draft'])}</pre></details>")
             h.append("</div>")
         h.append("</div>")
         cols.append("".join(h))
@@ -294,7 +285,10 @@ def tab_memory(state, notes):
     traces = "".join(f"<li>{icon('signal', 15)}<span><b>{e(t['agent'])}</b>: {len(t['steps'])} steps"
                      + (f" · PRISM id <code>{e(t['prism_id'])}</code>" if t.get("prism_id") else " · local trace") + "</span></li>"
                      for t in state.get("traces", []))
-    return section("memory", "Memory and traces", f"One shared note per founder, read and written by every agent. Run {e(state['run_id'])}.",
+    status = "".join(f"<li><i class='dot {'live' if mode == 'live' else ''}'></i><span>{e(name)}: {e(mode)}</span></li>"
+                     for name, (mode, _err) in ix.status().items())
+    return section("memory", "Memory", f"One shared note per founder, read and written by every agent. Run {e(state['run_id'])}.",
+                   f"<div class='card' style='margin-bottom:14px'><b>Integrations</b><ul class='plain'>{status}</ul></div>"
                    f"<div class='split'><div class='card'><b>Firm memory</b><details><summary>Show notes JSON</summary>"
                    f"<pre>{e(json.dumps(mem, indent=1, default=str))}</pre></details></div>"
                    f"<div class='card'><b>Agent traces</b> (PRISM trajectories)<ul class='plain'>{traces}</ul>"
@@ -302,13 +296,11 @@ def tab_memory(state, notes):
 
 
 def section(name, title, sub, body):
-    return f"<section class='glass section'><h2>{icon(name, 20)}{e(title)}</h2><p class='sub'>{e(sub)}</p>{body}</section>"
+    return f"<section class='glass section'><h2>{e(title)}</h2>{body}</section>"
 
 
 @app.route("/")
 def index():
-    firm = engine.load("firm.json")
-    fund = firm["fund"]
     params = {k: request.args.get(k) for k in ("live", "closed", "signals", "tab", "brief")}
     params["live"] = 1 if (params.get("live") == "1" and ix.LLM_CLIENT.live) else 0
     tab = params.get("tab") if params.get("tab") in dict(TABS) else "today"
@@ -319,30 +311,17 @@ def index():
     count = lambda s: sum(1 for n in leads if n["status"] == s)  # noqa: E731
     dropped = sum(1 for r in state["triage"] if r["triage"] == "drop")
 
-    status = "".join(f"<span><i class='dot {'live' if mode == 'live' else ''}'></i>{e(name.split(' (')[0])}: {e(mode)}</span>"
-                     for name, (mode, _err) in ix.status().items())
-    menubar = (f"<header class='menubar'><span class='brand'>{icon('logo', 16)}Last Touch</span><span>{e(fund['name'])}</span>"
-               f"<span class='grow'></span><span class='status'>{status}</span>"
-               f"<span>{dt.datetime.now().strftime('%a %b %d')}</span></header>")
-
     live_btn = ""
     if ix.LLM_CLIENT.live:
         live_btn = (f"<a class='btn' href='{link(params, live=0 if params['live'] else 1)}'>{icon('spark', 16)}"
                     f"Live AI: {'on' if params['live'] else 'off'}</a>")
-    hero = (f"<section class='glass hero'><div><h1>Every person at the firm gets an agent.</h1>"
-            f"<p><b>The agents share one firm memory and talk to each other</b>, so no great founder is dropped between the inbox, "
-            f"the event and the partner meeting.</p><div class='chips'>"
-            f"<span class='chip'>{icon('flag', 14)}{e(fund['label'])}: {e(state['fund']['status'])}</span>"
-            f"<span class='chip'>Thesis: {e(', '.join(fund['sectors']))}</span>"
-            f"<span class='chip'>{e(', '.join(fund['stages']))}</span>"
-            f"<span class='chip'>Demo data</span></div></div>"
+    hero = (f"<header class='hero'><div><h1>Last Touch</h1><p>One agent per person. One shared firm memory.</p></div>"
             f"<div class='actions'>{live_btn}<a class='btn primary' href='{link({'live': params['live'], 'tab': tab})}'>"
-            f"{icon('play', 16)}Run agents ({len(state['triage'])} new)</a></div></section>")
+            f"{icon('play', 15)}Run agents</a></div></header>")
 
-    metrics = [("mail", "", "Inbound", len(state["triage"])), ("filter", "", "Dropped", dropped), ("hot", "hot", "Hot", count("hot")),
-               ("park", "park", "Parked", count("park")), ("warm", "warm", "Warm", count("warm")), ("pass", "pass", "Pass + referral", count("pass"))]
-    m = "".join(f"<div class='glass metric {cls}'><div class='k'>{icon(ic, 15)}{k}</div><div class='v'>{v}</div></div>"
-                for ic, cls, k, v in metrics)
+    metrics = [("Inbound", len(state["triage"])), ("Dropped", dropped), ("Hot", count("hot")),
+               ("Parked", count("park")), ("Warm", count("warm")), ("Pass", count("pass"))]
+    m = "".join(f"<div class='metric'><div class='v'>{v}</div><div class='k'>{k}</div></div>" for k, v in metrics)
 
     views = {"today": lambda: tab_today(state, leads, members), "channel": lambda: tab_channel(state, members),
              "triage": lambda: tab_triage(state, leads, members), "briefs": lambda: tab_briefs(state, leads, members, params),
@@ -351,8 +330,8 @@ def index():
                    f"<span class='tile'>{icon(t, 24)}</span><span class='lbl'>{label}</span></a>" for t, label in TABS)
 
     return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            f"<title>Last Touch</title><style>{CSS}</style></head><body>{menubar}<main class='page'>{hero}"
-            f"<div class='metrics'>{m}</div>{views[tab]()}</main><nav class='glass dock'>{dock}</nav></body></html>")
+            f"<title>Last Touch</title><style>{CSS}</style></head><body><main class='page'>{hero}"
+            f"<div class='glass metrics'>{m}</div>{views[tab]()}</main><nav class='glass dock'>{dock}</nav></body></html>")
 
 
 if __name__ == "__main__":
