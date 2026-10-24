@@ -13,7 +13,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import datetime as dt  # noqa: E402
 import json  # noqa: E402
+import re  # noqa: E402
 import threading  # noqa: E402
 
 from flask import Flask, jsonify, request  # noqa: E402
@@ -56,7 +58,7 @@ def build_profile(a: dict) -> tuple[dict, dict]:
     focus = str(a.get("focus") or "")
     fl = focus.lower()
     sectors = []
-    if any(k in fl for k in ("ai", "devtool", "dev tool", "infra", "developer")):
+    if re.search(r"\b(ai|a\.i\.|devtools?|dev tools|infra|developers?)\b", fl):
         sectors += ["ai", "devtools"]
     if any(k in fl for k in ("consumer", "cpg", "brand", "food", "retail")):
         sectors += ["consumer", "cpg"]
@@ -85,6 +87,8 @@ def build_profile(a: dict) -> tuple[dict, dict]:
     sources = a.get("sources") or []
     if isinstance(sources, str):
         sources = [s.strip() for s in sources.split(",") if s.strip()]
+    if not isinstance(sources, (list, tuple)):
+        sources = []
     member = {"id": "me", "name": name, "sectors": sectors, "stages": stages, "weights": WEIGHTS[style]}
     fixtures = engine.load("akta_fixtures.json")["comps"]
     state = base_state()
@@ -99,12 +103,19 @@ def build_profile(a: dict) -> tuple[dict, dict]:
     return profile, member
 
 
+def nice_date(iso: str) -> str:
+    d = dt.date.fromisoformat(iso)
+    return f"{d.strftime('%b')} {d.day}"
+
+
 def lead_for(n: dict, member: dict, members: dict) -> dict:
     s = engine.score_member(n, member)
     thesis = s["features"]["thesis"]
     score = s["score"]
     if thesis == 0:
         verdict = "Outside your thesis"
+    elif n.get("status") == "park":
+        verdict = "Parked"
     elif score >= 65:
         verdict = "Take the first call"
     elif score >= 45:
@@ -115,37 +126,55 @@ def lead_for(n: dict, member: dict, members: dict) -> dict:
     why = ", ".join(f"{LABEL[k]} {v:g}/{member['weights'][k]}" for k, v in top)
     if n.get("closing_weeks") and n["closing_weeks"] <= 8:
         why += f". Closing in {n['closing_weeks']} weeks"
+    acts = [a for a in n.get("actions", []) if a["kind"] not in ("second_touch", "recheck")]
+    lead_act = acts[0] if acts else None
+    evaluator = first(members[n["routed_to"]]["name"]) if n.get("routed_to") in members else None
+    founder, company = n.get("founder"), n.get("company")
     known = None
     if n.get("prior"):
         p = n["prior"]
-        who = members[p["who"]]
-        known = {"id": p["who"], "name": first(who["name"]),
-                 "text": f"{first(who['name'])} met {n['founder']} on {p['date']} at {p['where']}, {p['days']} days ago. "
-                         f"No follow-up was sent. {first(who['name'])} will send a warm re-intro within 24 hours, and you take the first call.",
-                 "next": f"{first(who['name'])} sends a re-intro within 24h. You take the first call."}
+        who = first(members[p["who"]]["name"])
+        call = evaluator or who
+        known = {"id": p["who"], "name": who, "rank": 0,
+                 "text": f"{who} met {founder} on {nice_date(p['date'])} at {p['where']}, {p['days']} days ago, and no follow-up was sent. "
+                         f"{who} will send a warm re-intro within 24 hours, and {call} takes the first call. I'll add you to it.",
+                 "next": f"{who} re-intros within 24h. {call} takes the first call, you join."}
     elif n.get("owner") and n["owner"] != "ava":
-        who = members[n["owner"]]
-        known = {"id": n["owner"], "name": first(who["name"]),
-                 "text": f"{first(who['name'])} met {n['founder']} at the Deal Flow hackathon yesterday and owns the relationship. "
-                         f"Happy to co-own it with you: I'll add you to the follow-up call.",
-                 "next": f"{first(who['name'])} owns it. You are co-owner on the follow-up call."}
-    elif n.get("routed_to") in members and (n.get("score") or 0) >= 65:
-        who = members[n["routed_to"]]
-        known = {"id": n["routed_to"], "name": first(who["name"]),
-                 "text": f"{n.get('company')} is on {first(who['name'])}'s list too ({n['score']}/100 on {first(who['name'])}'s thesis). "
-                         f"No one has replied yet, so you can take the first reply and I'll loop {first(who['name'])} in.",
-                 "next": f"You reply first and loop in {first(who['name'])}."}
+        who = first(members[n["owner"]]["name"])
+        known = {"id": n["owner"], "name": who, "rank": 1,
+                 "text": f"{who} met {founder} at the Deal Flow hackathon yesterday and owns the relationship. "
+                         f"{who} is proposing a 20-minute call and will add you to it.",
+                 "next": f"{who} proposes the call. You join."}
+    elif n.get("status") == "park" and lead_act:
+        who = first(members[lead_act["who"]]["name"])
+        known = {"id": lead_act["who"], "name": who, "rank": 3,
+                 "text": f"{who} parked {company}: they close in {n.get('closing_weeks')} weeks and Fund II is still raising, "
+                         f"so we can't commit before their close. I'll resurface it the day Fund II closes.",
+                 "next": "Parked until Fund II closes."}
+    elif lead_act:
+        who = first(members[lead_act["who"]]["name"])
+        label = {"hot": "hot", "warm": "keeping warm", "pass": "declining"}.get(n.get("status"), n.get("status"))
+        what = lead_act["what"].replace("Follow up: ", "").rstrip(".")
+        known = {"id": lead_act["who"], "name": who, "rank": 2 if n.get("status") == "hot" else 4,
+                 "text": f"{who} owns {company} ({label}). Next step on the board: {what[0].lower() + what[1:]}. "
+                         + ("I'll add you to the call." if n.get("status") == "hot" else "Happy to add you as co-owner."),
+                 "next": f"{who}: {what}."}
     ak = n.get("akta") or {}
     comps = ", ".join(c["name"] for c in ak.get("comps", [])[:4])
+    f = first(founder) or "there"
+    if n.get("channel") == "event":
+        draft = (f"Hi {f}, great meeting you at the Deal Flow hackathon. I'd love to keep the conversation about "
+                 f"{company or 'your company'} going. Do you have 20 minutes next week? Best, {first(member['name'])}")
+    else:
+        draft = (f"Hi {f}, thanks for reaching out about {company or 'your company'}. I'd love to learn more about what you're "
+                 f"building. Do you have 20 minutes next week? Best, {first(member['name'])}")
     return {
-        "id": n["id"], "company": n.get("company"), "founder": n.get("founder"), "one_liner": n.get("one_liner") or "",
+        "id": n["id"], "company": company, "founder": founder, "one_liner": n.get("one_liner") or "",
         "sector": n.get("sector"), "stage": n.get("stage"), "channel": CHANNEL.get(n.get("channel"), n.get("channel")),
         "msg_id": n.get("msg_id"), "score": score, "verdict": verdict, "why": why, "known": known,
         "akta": (f"comparables: {comps}" if comps else "no records yet (normal for pre-seed)") + f" [{ak.get('source', 'demo fixture')}]",
         "traction": engine.metrics_line(n.get("metrics")), "background": "; ".join(n.get("background") or []) or "Not stated",
-        "raise": engine.money(n.get("raising_usd")),
-        "draft": f"Hi {first(n.get('founder')) or 'there'}, I came across {n.get('company') or 'your company'} and would love to learn more "
-                 f"about what you're building. Do you have 20 minutes next week? Best, {first(member['name'])}",
+        "raise": engine.money(n.get("raising_usd")), "draft": draft,
     }
 
 
@@ -159,14 +188,28 @@ def team_board(state: dict) -> list[dict]:
             if a["kind"] in ("second_touch", "recheck"):
                 continue
             rows.append({"who": a["who"], "name": members[a["who"]]["name"], "founder": n.get("founder"), "company": n.get("company"),
-                         "status": n["status"], "what": a["what"], "due": a.get("due") or "When Fund II closes or a new signal"})
+                         "status": n["status"], "what": a["what"].replace("(you met them first)", "(met them first)"),
+                         "due": a.get("due") or "When Fund II closes or a new signal"})
     order = {"ben": 0, "cara": 1, "ava": 2}
     return sorted(rows, key=lambda r: (order.get(r["who"], 9), r["status"] != "hot"))
 
 
+def handoff(state: dict) -> str:
+    """The one dropped-ball the team board should call out: a founder someone met but never followed up with."""
+    members = state["members"]
+    for n in state["notes"]:
+        if n.get("prior"):
+            who = first(members[n["prior"]["who"]]["name"])
+            call = first(members[n["routed_to"]]["name"]) if n.get("routed_to") in members else who
+            return (f"One handoff to watch: {who} met {n['founder']} {n['prior']['days']} days ago and never followed up. "
+                    f"{who}'s agent has a re-intro draft ready, and {call} takes the first call.")
+    return ""
+
+
 @app.route("/api/build", methods=["POST"])
 def api_build():
-    answers = request.get_json(silent=True) or {}
+    answers = request.get_json(silent=True)
+    answers = answers if isinstance(answers, dict) else {}
     profile, member = build_profile(answers)
     state = base_state()
     leads = [lead_for(n, member, state["members"]) for n in state["notes"] if n.get("status")]
@@ -202,7 +245,7 @@ def index():
     data = {
         "mvp": MVP, "icons": ICONS, "fund": FIRM["fund"],
         "team": [{"id": m["id"], "name": m["name"], "role": m["role"]} for m in state["members"].values()],
-        "board": team_board(state),
+        "board": team_board(state), "labels": LABEL, "handoff": handoff(state),
     }
     blob = json.dumps(data).replace("</", "<\\/")
     return PAGE.replace("__DATA__", blob)
@@ -258,7 +301,7 @@ background:radial-gradient(closest-side,var(--solid) 78%,transparent 80%),conic-
 @media (prefers-color-scheme:dark){.pill.s-hot,.pill.s-due,.pill.v-take{color:#ffb340}}
 .why{font-size:12.5px;color:var(--muted)}.acts{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
 .btn{display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border-radius:999px;font-weight:600;font-size:13px;background:var(--glass);border:1px solid var(--edge);
-box-shadow:inset 0 1px 0 rgba(255,255,255,.5)}.btn.primary{background:var(--grad);color:#fff;border-color:transparent}.btn:hover{filter:brightness(1.05)}
+box-shadow:inset 0 1px 0 rgba(255,255,255,.5)}.btn.primary{background:var(--grad);color:#fff;border-color:transparent}.btn:hover{filter:brightness(1.05)}.btn:disabled{opacity:.45;cursor:default;filter:none}
 .profile{max-width:560px}.profile .head{display:flex;gap:12px;align-items:center;margin-bottom:8px}.profile .head b{font-size:17px;display:block}
 .kv{display:grid;grid-template-columns:110px 1fr;gap:4px 12px;font-size:13.5px;margin:0}.kv dt{color:var(--muted)}.kv dd{margin:0}
 .bars{display:grid;gap:5px;margin-top:10px}.bar{display:grid;grid-template-columns:130px 1fr 34px;gap:8px;align-items:center;font-size:12px;color:var(--muted)}
@@ -302,7 +345,7 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
 .rec .live{min-height:66px;font-size:14px;color:var(--muted);text-align:left;margin:4px 0 14px}
 @media (max-width:620px){.chat{padding:64px 12px 10px}.indent{margin-left:0}.bubble{max-width:88%}.corner{top:10px;right:10px}
 .kv{grid-template-columns:90px 1fr}.bar{grid-template-columns:100px 1fr 30px}.chips{justify-content:flex-start;flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}
-.chip{flex:none}.bottom{padding:0 10px 10px}.row{grid-template-columns:auto 1fr}.row .right{grid-column:2;text-align:left}}
+.chip{flex:none}.chips.multi{flex-wrap:wrap}.bottom{padding:0 10px 10px}.row{grid-template-columns:auto 1fr}.row .right{grid-column:2;text-align:left}}
 </style></head><body>
 <div class="app"><div class="chat" id="chat" aria-live="polite"></div>
 <div class="bottom"><div class="chips" id="chips"></div>
@@ -324,17 +367,21 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
   const SOURCES = ['Gmail', 'LinkedIn', 'Google Calendar', 'WhatsApp', 'Event notes'];
   let S = {};
   try { S = JSON.parse(localStorage.getItem('lt_mvp') || '{}') || {}; } catch (e) { S = {}; }
-  S.people = S.people || [];
+  S.people = Array.isArray(S.people) ? S.people : [];
+  S.answers = S.answers && typeof S.answers === 'object' ? S.answers : {};
+  S.memory = S.memory && typeof S.memory === 'object' ? S.memory : {};
+  if (S.profile && !(S.profile.weights && Array.isArray(S.profile.sources) && Array.isArray(S.profile.sectors) && Array.isArray(S.profile.stages))) { S.profile = null; S.leads = null; }
   const save = () => { try { localStorage.setItem('lt_mvp', JSON.stringify(S)); } catch (e) {} };
   $('#mic').innerHTML = ic('mic', 18); $('#send').innerHTML = ic('up', 18); $('#open-settings').innerHTML = ic('settings', 18);
 
   const initials = (n) => String(n).replace(/^@/, '').split(/[\s._-]+/).map((p) => p[0] || '').join('').slice(0, 2).toUpperCase();
-  const me = () => (S.profile ? `${S.profile.first}'s agent` : 'Your agent');
+  const me = () => { const n = (S.profile && S.profile.first) || String(S.answers.name || '').trim().split(/\s+/)[0]; return n ? `${n}'s agent` : 'Your agent'; };
   const scroll = () => { chat.scrollTop = chat.scrollHeight; };
   function add(html) { chat.insertAdjacentHTML('beforeend', html); scroll(); return chat.lastElementChild; }
   function agentAvatar(who) {
     if (!who) return `<span class="avatar me-agent">${ic('spark', 16)}</span>`;
-    return `<span class="avatar" style="--hue:${HUE[who.id] || '#ff9f0a'}">${esc(initials(who.name))}</span>`;
+    const full = (D.team.find((m) => m.id === who.id) || {}).name || who.name;
+    return `<span class="avatar" style="--hue:${HUE[who.id] || '#ff9f0a'}">${esc(initials(full))}</span>`;
   }
   function say(html, who) {
     const name = who ? `${who.name}'s agent` : me();
@@ -362,11 +409,13 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return r.json();
   }
-  function setChips(list) {
+  function setChips(list, cls) {
+    chipsEl.className = 'chips ' + (cls || '');
     chipsEl.innerHTML = list.map((c, i) => `<button type="button" class="chip ${c.cls || ''}" data-i="${i}">${c.icon ? ic(c.icon, 14) : ''}${esc(c.label)}</button>`).join('');
     chipsEl.onclick = (ev) => { const b = ev.target.closest('.chip'); if (b && !busy) list[+b.dataset.i].act(b); };
+    scroll(); requestAnimationFrame(scroll);
   }
-  let busy = false;
+  let busy = false, pending = null;
   async function run(fn) { if (busy) return; busy = true; try { await fn(); } catch (e) { sys('Something went wrong. Try again.'); } finally { busy = false; } }
 
   // ---------------------------------------------------------------- interview
@@ -385,10 +434,10 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
     say(esc(q.q.replace('{name}', S.answers.name || '')));
     input.placeholder = q.placeholder || 'Type an answer or pick one';
     if (q.multi) {
-      const picked = new Set(['Gmail', 'LinkedIn', 'Event notes']);
+      const picked = new Set(SOURCES);
       const draw = () => setChips(q.chips.map((c) => ({label: c, icon: c, cls: picked.has(c) ? 'on' : '',
         act: () => { picked.has(c) ? picked.delete(c) : picked.add(c); draw(); }}))
-        .concat([{label: 'Connect', icon: 'check', cls: 'go', act: () => run(() => answer(SOURCES.filter((s) => picked.has(s)).join(', ') || 'Gmail'))}]));
+        .concat([{label: 'Connect', icon: 'check', cls: 'go', act: () => run(() => answer(SOURCES.filter((s) => picked.has(s)).join(', ') || 'Gmail'))}]), 'multi');
       draw();
     } else {
       setChips(q.chips.map((c) => ({label: c, act: () => run(() => answer(c))})));
@@ -398,7 +447,13 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
   async function answer(text) {
     const q = Q[step];
     mine(text); setChips([]);
-    S.answers[q.key] = q.multi ? text.split(/,\s*/).filter(Boolean) : text;
+    if (q.multi) {
+      const t = text.toLowerCase();
+      const picked = SOURCES.filter((s) => t.includes(s.toLowerCase()) || t.includes(s.toLowerCase().split(' ').pop()) || (s === 'Gmail' && /e-?mail/.test(t)));
+      S.answers[q.key] = picked.length ? picked : SOURCES.slice();
+    } else {
+      S.answers[q.key] = text;
+    }
     save();
     if (step < Q.length - 1) await next(); else await build();
   }
@@ -407,9 +462,14 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
     await typing(500);
     say('Thanks. Give me a few seconds to build myself around how you work.');
     const src = S.answers.sources || [];
-    await tool(`connect(${src.join(', ')})`, `${src.length} sources connected (demo data)`);
+    await tool(`connect(${src.join(', ')})`, `${src.length} ${src.length === 1 ? 'platform' : 'platforms'} connected (demo data)`);
     await tool('read_history(last_90_days)', '214 founder threads, 38 meetings, 12 event notes');
-    const r = await post('/api/build', S.answers);
+    let r;
+    try { r = await post('/api/build', S.answers); } catch (e) {
+      say('I could not reach the server to finish building. Tap Try again.');
+      setChips([{label: 'Try again', icon: 'check', cls: 'on', act: () => run(build)}]);
+      return;
+    }
     S.profile = r.profile; S.leads = r.leads; save();
     await tool(`learn_thesis("${r.profile.focus}")`, r.profile.weights_text);
     await tool(`akta.pro industry_map("${r.profile.focus}")`, r.profile.akta, {kind: 'akta'});
@@ -422,14 +482,15 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
   function profileCard() {
     const p = S.profile;
     const bars = Object.entries(p.weights).filter(([, v]) => v).sort((a, b) => b[1] - a[1])
-      .map(([k, v]) => `<div class="bar"><span>${esc(k.replace('_', ' '))}</span><span class="t"><i style="width:${v * 2.5}%"></i></span><span>${v}%</span></div>`).join('');
+      .map(([k, v]) => `<div class="bar"><span>${esc(D.labels[k] || k.replace('_', ' '))}</span><span class="t"><i style="width:${v * 2.5}%"></i></span><span>${v}%</span></div>`).join('');
     block(`<div class="card profile"><div class="head">${agentAvatar()}<div><b>${esc(p.first)}'s agent</b><span class="small">Built from your interview</span></div></div>
       <dl class="kv"><dt>Role</dt><dd>${esc(p.role)}</dd><dt>Focus</dt><dd>${esc(p.sectors.join(', '))} · ${esc(p.stages.join(', '))}</dd>
       <dt>Trusts</dt><dd>${esc(p.signal || 'A balanced read')}</dd><dt>Listens on</dt><dd>${esc(p.sources.join(', '))}</dd><dt>Filters out</dt><dd>${esc(p.nos)}</dd></dl>
       <div class="bars">${bars}</div></div>`);
   }
-  function mainChips() {
-    setChips([
+  function mainChips() { setChips(mainList()); }
+  function mainList() {
+    return ([
       {label: 'Source founders', icon: 'spark', act: () => run(() => ask('Source founders for me'))},
       {label: 'Who have I been talking to?', icon: 'Gmail', act: () => run(() => ask('Who have I been talking to?'))},
       {label: '15-second note', icon: 'mic', act: () => run(() => voiceNote(false))},
@@ -442,10 +503,16 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
     if (!S.leads) { const r = await post('/api/build', S.answers || {}); S.profile = r.profile; S.leads = r.leads; save(); }
     return S.leads;
   }
-  const find = (q) => (S.leads || []).find((l) => [l.company, l.founder].some((x) => x && q.includes(x.toLowerCase())));
+  const words = (t) => String(t || '').toLowerCase().split(/[^a-z0-9\u00e0-\u00ff]+/).filter(Boolean);
+  const find = (q) => {
+    const w = new Set(words(q));
+    return (S.leads || []).find((l) => [l.company, l.founder].some((x) => x && (q.includes(x.toLowerCase()) || words(x).some((t) => t.length > 3 && w.has(t)))));
+  };
   async function ask(text) {
     mine(text);
     const q = text.toLowerCase();
+    const p = pending; pending = null; mainChips();
+    if (p && /^(yes|yep|yeah|sure|ok|okay|please|go ahead|do it|approve)\b|draft (the )?(\d+ )?repl|approve/.test(q)) return p();
     await leads();
     const l = find(q);
     if (l && /draft|follow|reply|write/.test(q)) return draft(l);
@@ -455,6 +522,8 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
     if (/talking|talk to|contacts|conversation|who have i/.test(q)) return contacts();
     if (/note|record|voice/.test(q)) return voiceNote(true);
     if (/team|working|firm|everyone|board/.test(q)) return team();
+    const mate = D.team.find((m) => words(q).includes(m.name.split(' ')[0].toLowerCase()));
+    if (mate) return teammate(mate);
     await typing(400);
     say('I can source founders, show who you have been talking to, take a 15-second note, or check what your team is working on. You can also ask about a company, like Patchbay or Quillstack.');
   }
@@ -464,20 +533,27 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
     const all = await leads();
     await tool(`scan_inbox(${(S.profile.sources || []).join(', ')})`, '14 new messages: 9 founders kept, 5 dropped (vendor, token spam, webinar promo, local bakery, copy-paste pitch)');
     const top = all.filter((l) => l.verdict !== 'Outside your thesis' && l.verdict !== 'Pass').slice(0, 4);
+    if (!top.length) {
+      await typing(300);
+      say(`Nothing in ${esc(S.profile.sectors.join(', '))} came in today. Here are the closest founders on your other criteria:`);
+      block(`<div class="cards">${all.slice(0, 3).map(leadCard).join('')}</div>`);
+      return;
+    }
     for (const l of top) await tool(`akta.pro search("${l.company}")`, l.akta, {kind: 'akta', wait: 380});
     await tool(`score_with_my_thesis(${top.length} founders)`, top.map((l) => `${l.company} ${l.score}`).join(' · '));
     await typing(350);
     say(`Here is who is worth your time today, ranked by your own criteria. ${all.length - top.length} more are below your bar or outside your thesis.`);
     block(`<div class="cards">${top.map(leadCard).join('')}</div>`);
-    const known = top.filter((l) => l.known).slice(0, 2);
+    const known = top.filter((l) => l.known).sort((a, b) => a.known.rank - b.known.rank);
     if (known.length) {
       await typing(400);
-      say(`${known.length} of these are already known to the firm. Checking with your teammates' agents before anyone double-contacts them.`);
-      for (const l of known) await askTeam(l, false);
+      const n = Math.min(2, known.length);
+      say(`${known.length} of these ${known.length === 1 ? 'is' : 'are'} already in motion at the firm. Checking ${n === 1 ? 'it' : 'the two most urgent'} with your teammates' agents so nobody double-contacts a founder.`);
+      for (const l of known.slice(0, n)) await askTeam(l, false);
     }
   }
   function leadCard(l) {
-    const v = l.verdict === 'Take the first call' ? 'v-take' : l.verdict === 'Keep warm' ? 'v-warm' : '';
+    const v = l.verdict === 'Take the first call' ? 'v-take' : l.verdict === 'Keep warm' ? 'v-warm' : l.verdict === 'Parked' ? 's-park' : '';
     return `<div class="card lead"><div class="top"><div><h4>${esc(l.company)}</h4><small>${esc(l.founder)} · via ${esc(l.channel)}</small></div>
       <div class="ring" style="--p:${l.score}" title="Score on your thesis">${l.score}</div></div><p>${esc(l.one_liner)}</p>
       <div class="meta"><span class="pill ${v}">${esc(l.verdict)}</span><span class="pill">${esc(l.sector)} · ${esc(l.stage)}</span>${l.known ? `<span class="pill s-scheduled">Known to ${esc(l.known.name)}</span>` : ''}</div>
@@ -496,13 +572,14 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
   async function detail(l) {
     await tool(`akta.pro search("${l.company}")`, l.akta, {kind: 'akta'});
     await tool(`read_firm_memory("${l.company}")`, l.known ? `known to ${l.known.name}` : 'no prior touches', {kind: 'mem'});
-    say(`<b>${esc(l.company)}</b> · ${esc(l.one_liner)}<br>Team: ${esc(l.founder)} (${esc(l.background)})<br>Traction: ${esc(l.traction)}${l.raise ? `<br>Raising: ${esc(l.raise)}` : ''}<br>On your thesis: ${l.score}/100, ${esc(l.verdict.toLowerCase())}. ${esc(l.why)}.`);
+    say(`<b>${esc(l.company)}</b> · ${esc(l.one_liner)}<br>Team: ${esc(l.founder)} (${esc(l.background)})<br>Traction: ${esc(l.traction)}${l.raise ? `<br>Raising: ${esc(l.raise)}` : ''}<br>Score on your criteria: ${l.score}/100 (${esc(l.verdict)}). Top factors: ${esc(l.why)}.`);
     if (l.known) await askTeam(l, false);
   }
   async function askTeam(l, direct) {
     if (!l.known) {
       await tool(`who_knows("${l.founder}")`, 'Ava, Ben and Cara’s agents: no prior contact', {kind: 'agent', target: 'all team agents'});
-      say(`Nobody at the firm has talked to ${esc(l.founder)} yet. It's yours: I logged you as the owner in firm memory.`);
+      S.memory[l.company] = {founder: l.founder, next: 'You own first outreach'}; save();
+      say(`Nobody at the firm has talked to ${esc(l.founder)} yet, so it's yours. I noted you as the owner in firm memory.`);
       return;
     }
     const who = {id: l.known.id, name: l.known.name};
@@ -510,12 +587,15 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
     await typing(450);
     say(esc(l.known.text), who);
     await tool(`update_firm_memory("${l.company}")`, `next step: ${l.known.next}`, {kind: 'mem'});
+    S.memory[l.company] = {founder: l.founder, next: l.known.next}; save();
     if (direct) say(`Got it. Next step: ${esc(l.known.next)}`);
   }
   async function contacts() {
-    const src = (S.profile && S.profile.sources.length ? S.profile.sources : SOURCES);
+    const src = S.profile ? S.profile.sources : SOURCES;
+    if (!src.length) { await typing(300); say('No platforms are connected yet. Turn one on in Settings and ask me again.'); return; }
     await tool(`sync(${src.join(', ')})`, 'synced (demo data)');
     const rows = D.mvp.conversations.filter((c) => src.includes(c.channel));
+    if (!rows.length) { await typing(300); say('None of your connected platforms have founder conversations yet. Connect Gmail or LinkedIn in Settings.'); return; }
     const hidden = D.mvp.conversations.length - rows.length;
     await typing(350);
     say(`You have ${rows.length} active founder conversations${hidden ? ` (connect more platforms in Settings to see ${hidden} more)` : ''}. Here is who, where, and what's next:`);
@@ -525,8 +605,19 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
     const urgent = rows.filter((c) => c.status === 'due' || c.status === 'overdue');
     if (urgent.length) {
       await typing(350);
-      say(`${urgent.length} need you now: ${urgent.map((c) => `${esc(c.founder)} (${esc(c.due.toLowerCase())})`).join(', ')}. Want me to draft the replies?`);
+      say(`${urgent.length} need you now: ${urgent.map((c) => `${esc(c.founder)} (${esc(c.due.replace(/^Due /, 'due '))})`).join(', ')}. Want me to draft the replies?`);
+      pending = () => draftReplies(urgent);
+      setChips([{label: `Draft ${urgent.length === 1 ? 'the reply' : `${urgent.length} replies`}`, icon: 'send', cls: 'on', act: () => run(() => ask('Yes, draft the replies'))}].concat(mainList()));
     }
+  }
+  async function draftReplies(rows) {
+    const out = [];
+    for (const c of rows) {
+      const l = (S.leads || []).find((x) => x.company === c.company);
+      await tool(`draft_reply("${c.founder}", ${c.company})`, 'Draft ready (not sent)', {wait: 360});
+      out.push(`<b>${esc(c.founder)}</b> · ${esc(c.company)}<div class="draft">${esc(l ? l.draft : `Hi ${c.founder.split(' ')[0]}, thanks for your note about ${c.company}. ${c.next}. Best, ${S.profile.first}`)}</div>`);
+    }
+    say(`Here ${rows.length === 1 ? 'is the draft' : `are ${rows.length} drafts`}. Nothing is sent without you.<br>${out.join('')}`);
   }
   async function team() {
     for (const m of D.team) {
@@ -536,33 +627,47 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
     for (const u of S.people) await tool('list_relationships()', 'no founders yet (interview pending)', {kind: 'agent', target: `@${u}'s agent`, wait: 300});
     await typing(350);
     say('Here is who at the firm is talking to which founder, and what happens next:');
-    block(`<div class="card rows">${D.board.map((r) => `<div class="row">${agentAvatar({id: r.who, name: r.name})}
+    const yours = Object.entries(S.memory || {}).map(([company, m]) => `<div class="row">${agentAvatar()}
+      <div><b>${esc(S.profile.first)}</b> · ${esc(m.founder)}, ${esc(company)}<small>${esc(m.next)}</small></div>
+      <div class="right"><span class="pill s-due">You</span><br>From your agent</div></div>`).join('');
+    block(`<div class="card rows">${yours}${D.board.map((r) => `<div class="row">${agentAvatar({id: r.who, name: r.name})}
       <div><b>${esc(r.name.split(' ')[0])}</b> · ${esc(r.founder)}, ${esc(r.company)}<small>${esc(r.what)}</small></div>
       <div class="right"><span class="pill s-${esc(r.status)}">${esc({hot: 'Hot', park: 'Parked', warm: 'Warm', pass: 'Pass'}[r.status] || r.status)}</span><br>${esc(r.due)}</div></div>`).join('')}</div>`);
     await typing(350);
-    say('One handoff to watch: Ben met Maya Okafor 46 days ago and never followed up. Ben’s agent has a re-intro draft ready, and Cara takes the first call.');
+    if (D.handoff) say(esc(D.handoff));
+  }
+
+  async function teammate(m) {
+    const f = m.name.split(' ')[0];
+    const rows = D.board.filter((r) => r.who === m.id);
+    await tool('list_relationships()', `${rows.length} founders`, {kind: 'agent', target: `${f}'s agent`});
+    await typing(350);
+    say(rows.length ? `${f} has ${rows.length} founders in motion: ${rows.map((r) => `${esc(r.company)} (${esc(r.what.toLowerCase())}, ${esc(r.due)})`).join('; ')}.` : `${f} has no founders in motion right now.`, {id: m.id, name: f});
   }
 
   // ---------------------------------------------------------------- 15-second note
   async function voiceNote(fromChat) {
+    pending = null; mainChips();
     if (!fromChat) mine('Take a 15-second note');
     const vn = D.mvp.voice_note, dlg = $('#rec');
     dlg.innerHTML = `<div class="small">15-second note</div><div class="clock" id="clock"><b id="secs">15</b></div>
       <div class="wave">${Array.from({length: 18}, (_, i) => `<i style="animation-delay:${(i % 6) * 0.12}s"></i>`).join('')}</div>
-      <div class="live" id="live"></div><button class="btn primary" id="stop">${ic('stop', 14)}Stop and save</button>`;
+      <div class="live" id="live"></div><button class="btn primary" id="stop" disabled>${ic('stop', 14)}Stop and save</button>`;
     dlg.showModal();
     const words = vn.transcript.split(' ');
-    let elapsed = 0, stopped = false;
+    let elapsed = 0, stopped = false, cancelled = false;
     $('#stop').onclick = () => { stopped = true; };
-    dlg.oncancel = (ev) => { ev.preventDefault(); stopped = true; };
+    dlg.oncancel = (ev) => { ev.preventDefault(); cancelled = stopped = true; };
     while (!stopped && elapsed < vn.seconds * 10) {
       await sleep(100); elapsed += 1;
       $('#secs').textContent = Math.max(0, Math.ceil(vn.seconds - elapsed / 10));
       $('#clock').style.setProperty('--p', (elapsed / (vn.seconds * 10)) * 100);
       $('#live').textContent = words.slice(0, Math.min(words.length, Math.round(elapsed * words.length / 80))).join(' ');
+      if (elapsed >= 80) $('#stop').disabled = false;
     }
     dlg.close();
-    const secs = Math.max(3, Math.round(elapsed / 10));
+    if (cancelled) { sys('Voice note discarded'); return; }
+    const secs = Math.max(8, Math.round(elapsed / 10));
     add(`<div class="msg me"><div class="bubble">${ic('mic', 14)} Voice note · 0:${String(secs).padStart(2, '0')}<br><i>${esc(vn.transcript)}</i></div></div>`);
     const x = vn.extracted;
     await tool('transcribe(voice_note)', `${words.length} words`);
@@ -573,7 +678,13 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
     await typing(450);
     say(esc(t.reply), {id: t.id, name: t.name});
     await tool(`schedule_followup("${x.founder}", ${t.when})`, t.result, {kind: 'mem'});
+    S.memory[x.company] = {founder: x.founder, next: t.next.replace(/^you /, 'You ')}; save();
     say(`Saved. ${x.facts.map(esc).join(' · ')}.<br>Next steps: ${esc(t.next)} Nothing was sent without you.`);
+    pending = async () => {
+      await tool(`queue_intro("${x.founder}", ${t.name}, Monday 10:00)`, 'intro email queued for your final review (demo data)', {kind: 'agent', target: `${t.name}'s agent`});
+      say(`Done. The intro between ${esc(x.founder)} and ${esc(t.name)} is queued with the Monday 10:00 slot. You review the final email before it goes out.`);
+    };
+    setChips([{label: `Approve intro to ${t.name}`, icon: 'check', cls: 'on', act: () => run(() => ask('Approve the intro'))}].concat(mainList()));
   }
 
   // ---------------------------------------------------------------- settings
@@ -583,16 +694,16 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
     dlg.innerHTML = `<div class="sheet-head"><h2>Settings</h2><button class="round mic" id="close-settings" aria-label="Close">${ic('x', 16)}</button></div>
       <h3>Your agent</h3>${p ? `<ul class="list"><li>${agentAvatar()}<span><b>${esc(p.first)}'s agent</b><small>${esc(p.sectors.join(', '))} · ${esc(p.stages.join(', '))}</small></span></li></ul>
       <button class="btn" id="redo">Redo the interview</button>` : '<p class="small">Finish the interview in the chat to build your agent.</p>'}
-      <h3>Connected platforms</h3><ul class="list">${SOURCES.map((s) => `<li><span class="src">${ic(s, 16)}</span><span>${esc(s)}<small>${src.includes(s) ? 'Connected (demo data)' : 'Not connected'}</small></span>
-        <button class="toggle end ${src.includes(s) ? 'on' : ''}" data-src="${esc(s)}" aria-label="Toggle ${esc(s)}" ${p ? '' : 'disabled'}></button></li>`).join('')}</ul>
       <h3>Team agents</h3><ul class="list">${D.team.map((m) => `<li>${agentAvatar({id: m.id, name: m.name})}<span><b>${esc(m.name)}</b><small>${esc(m.role)} · agent ready</small></span></li>`).join('')}
       ${S.people.map((u, i) => `<li>${agentAvatar({id: 'x', name: u})}<span><b>@${esc(u)}</b><small>Invited · interview pending</small></span><button class="rm end" data-rm="${i}">Remove</button></li>`).join('')}</ul>
       <h3>Add a person</h3><form class="add" id="add-person"><input id="username" autocomplete="off" placeholder="Username, e.g. @dana" aria-label="Username"><button class="btn primary">${ic('userplus', 14)}Add</button></form>
       <p class="hint" id="add-hint">They get their own agent after a quick interview.</p>
+      <h3>Connected platforms</h3><ul class="list">${SOURCES.map((s) => `<li><span class="src">${ic(s, 16)}</span><span>${esc(s)}<small>${src.includes(s) ? 'Connected (demo data)' : 'Not connected'}</small></span>
+        <button class="toggle end ${src.includes(s) ? 'on' : ''}" data-src="${esc(s)}" aria-label="Toggle ${esc(s)}" ${p ? '' : 'disabled'}></button></li>`).join('')}</ul>
       <h3>Demo</h3><p class="small">All founders, messages and platforms are mock data.</p><button class="btn" id="reset">Reset demo</button>`;
     $('#close-settings').onclick = () => dlg.close();
-    const redo = $('#redo'); if (redo) redo.onclick = () => { dlg.close(); run(startInterview); };
-    $('#reset').onclick = () => { S = {people: []}; save(); dlg.close(); run(startInterview); };
+    const redo = $('#redo'); if (redo) redo.onclick = () => { S.profile = null; S.leads = null; S.answers = {}; save(); location.reload(); };
+    $('#reset').onclick = () => { try { localStorage.removeItem('lt_mvp'); } catch (e) {} location.reload(); };
     dlg.querySelectorAll('[data-src]').forEach((b) => { b.onclick = () => {
       const s = b.dataset.src, list = S.profile.sources;
       const i = list.indexOf(s); if (i >= 0) list.splice(i, 1); else list.push(s);
@@ -616,16 +727,22 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
     ev.preventDefault();
     const text = input.value.trim(); if (!text || busy) return;
     input.value = '';
-    if (!S.profile) run(() => answer(text)); else run(() => ask(text));
+    if (S.profile) run(() => ask(text));
+    else if (step >= Q.length - 1 && S.answers[Q[Q.length - 1].key] != null) run(build);
+    else if (step >= 0) run(() => answer(text));
   });
   $('#mic').onclick = () => { if (!S.profile) { sys('Finish the interview first, then your agent can take notes.'); return; } run(() => voiceNote(false)); };
 
   // ---------------------------------------------------------------- start
   if (S.profile) {
-    sys(`${D.fund.name} · ${S.profile.first}'s agent`);
-    profileCard();
-    say(`Welcome back, ${esc(S.profile.first)}. What should we work on?`);
-    mainChips();
+    try {
+      sys(`${D.fund.name} · ${S.profile.first}'s agent`);
+      profileCard();
+      say(`Welcome back, ${esc(S.profile.first)}. What should we work on?`);
+      mainChips();
+    } catch (e) {
+      S = {people: S.people, answers: {}, memory: {}}; save(); chat.innerHTML = ''; run(startInterview);
+    }
   } else {
     run(startInterview);
   }

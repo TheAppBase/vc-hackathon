@@ -21,7 +21,7 @@
       "chips": [
         "AI and devtools, pre-seed to seed",
         "Consumer and CPG, seed",
-        "Fintech, seed to Series A"
+        "Fintech and AI for finance, pre-seed to seed"
       ]
     },
     {
@@ -71,8 +71,8 @@
       "company": "Patchbay",
       "channel": "Event notes",
       "when": "Yesterday",
-      "summary": "Met at the Deal Flow hackathon. Ex-Stripe infra, webhook routing API.",
-      "next": "Send follow-up call invite",
+      "summary": "Met at the Deal Flow hackathon. Ex-Stripe infra, webhook routing API. Cara owns it.",
+      "next": "Join Cara's follow-up call",
       "status": "due",
       "due": "Due Monday"
     },
@@ -81,8 +81,8 @@
       "company": "Quillstack",
       "channel": "Google Calendar",
       "when": "Thursday 3:00 PM",
-      "summary": "First call booked. AI agents that close the books for finance teams.",
-      "next": "Read the brief before the call",
+      "summary": "Hold for Cara's first call with Maya. Ben's re-intro goes out first.",
+      "next": "Join Cara's first call",
       "status": "scheduled",
       "due": "Thu 3:00 PM"
     },
@@ -101,8 +101,8 @@
       "company": "Bramble",
       "channel": "Gmail",
       "when": "12 days ago",
-      "summary": "Sent the deck for a $2M seed. No reply yet.",
-      "next": "Reply: not a priority now, ask for updates",
+      "summary": "Sent you and Ava the deck for a $2M seed. No reply yet.",
+      "next": "Ava sends a keep-in-touch note, or reply yourself",
       "status": "overdue",
       "due": "12 days without a reply"
     },
