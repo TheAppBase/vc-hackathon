@@ -123,8 +123,8 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
 <dialog class="glass sheet" id="settings"></dialog>
 <div class="auth" id="auth" hidden><form class="card glass" id="auth-form" autocomplete="off">
 <h1>Last Touch</h1><p>Your personal sourcing agent. It reads your Google account and shares who you're talking to with your team.</p>
-<label class="field"><span>Your name</span><input id="auth-name" placeholder="Alex Frankel" maxlength="60" required></label>
-<label class="field"><span>Username</span><input id="auth-user" placeholder="alex" maxlength="31" required autocapitalize="off" spellcheck="false"></label>
+<label class="field"><span>Your name</span><input id="auth-name" placeholder="Your name" maxlength="60" required></label>
+<label class="field"><span>Username</span><input id="auth-user" placeholder="your-username" maxlength="31" required autocapitalize="off" spellcheck="false"></label>
 <p class="hint" id="auth-hint">Pick a username. Teammates add you with it.</p>
 <button class="btn primary wide" id="auth-go" disabled>Continue</button>
 <div id="auth-google"></div></form></div>
@@ -459,7 +459,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
           <button class="btn" id="g-off">Disconnect Google</button>`
         : `<p class="small">Connect once to give your agent Gmail, Google Calendar and Google Chat.</p><a class="btn primary" href="/auth/google">${ic('Gmail', 14)}Connect Google</a>`}
       <h3>Team</h3><ul class="list" id="team-list">${teamRows}</ul>
-      <h3>Add a person</h3><form class="add" id="add-person"><input id="username" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Username, e.g. dana" aria-label="Username"><button class="btn primary" id="add-btn">${ic('userplus', 14)}Add</button></form>
+      <h3>Add a person</h3><form class="add" id="add-person"><input id="username" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Their username" aria-label="Username"><button class="btn primary" id="add-btn">${ic('userplus', 14)}Add</button></form>
       <p class="hint" id="add-hint">Type their username. Their agent shares with yours once they add you back.</p>
       <h3>Recent agent actions</h3><ul class="list log">${log || '<li class="small">None yet.</li>'}</ul>
       <p class="hint">Firm memory: ${esc(D.store)}.</p>`;
