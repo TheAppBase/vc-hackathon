@@ -843,10 +843,14 @@ dialog::backdrop{background:rgba(10,20,22,.25);-webkit-backdrop-filter:blur(4px)
   }
   function startDictation() {
     if (!SR) { sys('Voice input needs Chrome, Edge or Safari. You can type instead.'); input.focus(); return; }
+    if (rec) discardDictation();
     listening = true; dictated = true; finalText = '';
     baseText = input.value.trim() ? input.value.replace(/\s*$/, ' ') : '';
-    rec = new SR(); rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || 'en-US';
-    rec.onresult = (e) => {
+    // Each session writes to the box only while it is the current one, so words that arrive after a send never come back.
+    const me = new SR(); rec = me;
+    me.continuous = true; me.interimResults = true; me.lang = navigator.language || 'en-US';
+    me.onresult = (e) => {
+      if (rec !== me) return;
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
@@ -856,23 +860,33 @@ dialog::backdrop{background:rgba(10,20,22,.25);-webkit-backdrop-filter:blur(4px)
       input.value = (baseText + finalText + (interim ? ' ' + interim.trim() : '')).replace(/^\s+/, '');
       grow(); input.scrollTop = input.scrollHeight;
     };
-    rec.onerror = (e) => {
+    me.onerror = (e) => {
+      if (rec !== me) return;
       if (['not-allowed', 'service-not-allowed', 'audio-capture'].includes(e.error)) {
         stopDictation();
         sys(e.error === 'audio-capture' ? 'No microphone found. You can type instead.' : 'Microphone access is blocked. Allow it in your browser, or type instead.');
       } else if (e.error === 'network') { stopDictation(); sys('The speech service is unreachable right now. You can type instead.'); }
     };
-    rec.onend = () => {
-      if (!listening) return;
+    me.onend = () => {
+      if (rec !== me) return;
+      if (!listening) { rec = null; return; }  // stopped with the mic: the last words have landed, the session is over
       baseText = (baseText + finalText).replace(/\s*$/, ' '); finalText = '';
-      try { rec.start(); } catch (e) { setTimeout(() => { if (listening) try { rec.start(); } catch (x) { stopDictation(); } }, 250); }
+      try { me.start(); } catch (e) { setTimeout(() => { if (listening && rec === me) try { me.start(); } catch (x) { stopDictation(); } }, 250); }
     };
-    try { rec.start(); } catch (e) { listening = false; }
+    try { me.start(); } catch (e) { listening = false; rec = null; }
     micUI(); input.focus();
   }
   function stopDictation() {
+    // Tapping the mic: stop listening but let words already spoken finish landing in the box.
     listening = false;
-    if (rec) { try { rec.stop(); } catch (e) {} rec = null; }
+    if (rec) { try { rec.stop(); } catch (e) {} }
+    micUI();
+  }
+  function discardDictation() {
+    // Sending: end the session now and drop anything still in flight, so it can't refill the box or join the next message.
+    listening = false;
+    const r = rec; rec = null; baseText = ''; finalText = '';
+    if (r) { r.onresult = r.onerror = r.onend = null; try { r.abort(); } catch (e) { try { r.stop(); } catch (x) {} } }
     micUI();
   }
   $('#mic').onclick = () => (listening ? stopDictation() : startDictation());
@@ -882,7 +896,7 @@ dialog::backdrop{background:rgba(10,20,22,.25);-webkit-backdrop-filter:blur(4px)
     ev.preventDefault();
     if (busy) return;
     const voice = dictated;
-    stopDictation(); dictated = false;
+    discardDictation(); dictated = false;
     const text = input.value.trim(); if (!text) return;
     input.value = ''; grow();
     if (S.profile) run(() => ask(text, voice));
