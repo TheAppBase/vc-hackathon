@@ -1,17 +1,22 @@
 """Firm memory on Vercel Blob (private store). Every user, note and agent action is one JSON blob.
 
-Set BLOB_READ_WRITE_TOKEN (Vercel adds it when you connect a Blob store to the project). Without it, the same
-JSON files are written under runtime/store/ so the app also runs locally.
+Credentials, in the order the app tries them (Vercel provides one or both when you connect a Blob store to the project):
+  BLOB_READ_WRITE_TOKEN             a static read-write token
+  BLOB_STORE_ID + Vercel OIDC       the short-lived OIDC token Vercel sends with each request (x-vercel-oidc-token)
+Without either, the same JSON files are written under runtime/store/ so the app also runs locally.
 
 Layout:
   users/<username>.json            account, interview profile, team, safety mode
   notes/<username>/<id>.json       recorded event notes and what the agent read from them
   actions/<username>/<id>.json     every write the agent proposed, and what happened to it
+  akta/<hash>.json                 akta.pro lookups, shared by the team
+  config/session-secret.json       the session signing key when SECRET_KEY is not set, shared by every server instance
 """
 from __future__ import annotations
 
 import json
 import os
+import secrets
 import threading
 from pathlib import Path
 from urllib.parse import quote
@@ -31,21 +36,44 @@ class Exists(Exception):
     """put(..., overwrite=False) on a pathname that is already taken."""
 
 
-def _store_id(token: str) -> str:
-    # vercel_blob_rw_<storeId>_<secret>
-    return token.removeprefix("vercel_blob_rw_").split("_", 1)[0].lower()
-
-
-LIVE = TOKEN.startswith("vercel_blob_rw_")
-STORE_ID = _store_id(TOKEN) if LIVE else ""
+if TOKEN.startswith("vercel_blob_rw_"):
+    KIND, STORE_ID = "token", TOKEN.removeprefix("vercel_blob_rw_").split("_", 1)[0]  # vercel_blob_rw_<storeId>_<secret>
+elif env("BLOB_STORE_ID"):
+    KIND, STORE_ID = "oidc", env("BLOB_STORE_ID").removeprefix("store_")
+else:
+    KIND, STORE_ID = "local", ""
+LIVE = KIND != "local"
+HOST = f"https://{STORE_ID.lower()}.private.blob.vercel-storage.com"
 
 
 def mode() -> str:
-    return "Vercel Blob (private)" if LIVE else f"local files ({LOCAL})"
+    return {"token": "Vercel Blob (private, read-write token)", "oidc": "Vercel Blob (private, OIDC)"}.get(
+        KIND, "local files on this server only (no BLOB_READ_WRITE_TOKEN or BLOB_STORE_ID)")
+
+
+def _bearer() -> str:
+    if KIND == "token":
+        return TOKEN
+    token = ""
+    try:
+        from flask import has_request_context, request
+
+        if has_request_context():
+            token = (request.headers.get("x-vercel-oidc-token") or "").strip()
+    except ImportError:
+        pass
+    token = token or env("VERCEL_OIDC_TOKEN")
+    if not token:
+        raise RuntimeError("Vercel OIDC token missing: turn on OIDC in the project settings, or set BLOB_READ_WRITE_TOKEN")
+    return token
 
 
 def _headers(extra: dict | None = None) -> dict:
-    return {"authorization": f"Bearer {TOKEN}", "x-api-version": API_VERSION, **(extra or {})}
+    """The headers the Vercel Blob SDK sends: bearer credential, API version, and the store id when using OIDC."""
+    h = {"authorization": f"Bearer {_bearer()}", "x-api-version": API_VERSION}
+    if KIND == "oidc":
+        h["x-vercel-blob-store-id"] = STORE_ID
+    return {**h, **(extra or {})}
 
 
 def get(path: str):
@@ -53,10 +81,9 @@ def get(path: str):
     if not LIVE:
         f = LOCAL / path
         return json.loads(f.read_text()) if f.exists() else None
-    url = f"https://{STORE_ID}.private.blob.vercel-storage.com/{quote(path, safe='/')}"
-    # cache=0 reads from origin storage, not the CDN, so a read right after an overwrite sees the new version
-    # (overwrites otherwise take up to 60 seconds to propagate). Same as the Blob SDK's useCache: false.
-    r = httpx.get(url, params={"cache": "0"}, headers={"authorization": f"Bearer {TOKEN}"}, timeout=15)
+    # cache=0 reads from origin storage, not the CDN, so a read right after an overwrite or delete sees the change
+    # (otherwise it can take up to 60 seconds to propagate). Same as the Blob SDK's useCache: false.
+    r = httpx.get(f"{HOST}/{quote(path, safe='/')}", params={"cache": "0"}, headers=_headers(), timeout=15)
     if r.status_code == 404:
         return None
     r.raise_for_status()
@@ -106,7 +133,20 @@ def delete(path: str):
         if f.exists():
             f.unlink()
         return
-    url = f"https://{STORE_ID}.private.blob.vercel-storage.com/{quote(path, safe='/')}"
-    r = httpx.post(f"{API}/delete", json={"urls": [url]}, headers=_headers(), timeout=20)
+    r = httpx.post(f"{API}/delete", json={"urls": [f"{HOST}/{quote(path, safe='/')}"]}, headers=_headers(), timeout=20)
     if r.status_code != 404:
         r.raise_for_status()
+
+
+def shared_secret() -> str:
+    """One random session key for every server instance, kept in the store (used when SECRET_KEY is not set)."""
+    path = "config/session-secret.json"
+    got = get(path)
+    if got and got.get("key"):
+        return got["key"]
+    key = secrets.token_hex(32)
+    try:
+        put(path, {"key": key}, overwrite=False)
+    except Exists:
+        return get(path)["key"]  # another instance created it first
+    return key

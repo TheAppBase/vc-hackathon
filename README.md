@@ -29,8 +29,8 @@ Without `BLOB_READ_WRITE_TOKEN`, data is stored in `runtime/store/` (local devel
 
 ## Deploy (Vercel)
 1. Import the repo. `app.py` exports the Flask `app`, so no framework preset is needed.
-2. Storage → create a **private** Blob store and connect it to the project (this adds `BLOB_READ_WRITE_TOKEN`).
-3. Set `SECRET_KEY`, `AKTA_API_KEY` and `PRISMTRACE_API_KEY` (`PRISM_API_KEY` also works), and optionally `NICRRON_API_KEY` and `ROUNDTABLE_MCP_URL` + `ROUNDTABLE_MCP_TOKEN`. Redeploy.
+2. Storage → create a **private** Blob store and connect it to the project. The app uses `BLOB_READ_WRITE_TOKEN` if Vercel adds it, or `BLOB_STORE_ID` with Vercel's OIDC token otherwise. Open `/api/health` on your deployment to see which storage and session key it is using.
+3. Set `SECRET_KEY` (optional: without it, one random key is kept in the Blob store and shared by every server instance), `AKTA_API_KEY` and `PRISMTRACE_API_KEY` (`PRISM_API_KEY` also works), and optionally `NICRRON_API_KEY` and `ROUNDTABLE_MCP_URL` + `ROUNDTABLE_MCP_TOKEN`. Redeploy.
 
 ## Files
 - `app.py`: Flask server: accounts, note saving and reading, founders, akta.pro skills, team, PRISM tracing hooks

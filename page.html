@@ -87,6 +87,11 @@ dialog::backdrop{background:rgba(10,20,22,.25);-webkit-backdrop-filter:blur(4px)
 .chip{flex:none}.bottom{padding:0 10px 10px}.row{grid-template-columns:auto 1fr}.row .right{grid-column:2;text-align:left}}
 
 [hidden]{display:none!important}
+.btn,.chip,.round,.tab,.corner,.rm{transition:transform .12s ease,filter .12s ease,opacity .12s ease}
+.btn:active,.chip:active,.round:active,.tab:active,.corner:active,.rm:active{transform:scale(.95)}
+.btn.busy{transform:scale(.97);filter:saturate(.7) brightness(.95);cursor:progress}
+.btn:disabled:not(.busy){opacity:.55;cursor:default}
+@media (prefers-reduced-motion:reduce){.btn,.chip,.round,.tab,.corner,.rm{transition:none}.btn:active,.chip:active,.round:active,.tab:active,.corner:active,.rm:active,.btn.busy{transform:none}}
 .composer{border-radius:26px;align-items:flex-end}
 .composer textarea{flex:1;min-width:0;border:0;background:transparent;font:inherit;color:var(--text);padding:8px 12px;outline:none;resize:none;
 max-height:168px;line-height:1.45}
@@ -150,7 +155,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
     const r = await fetch(url, opts);
     let j = {}; try { j = await r.json(); } catch (e) { j = {}; }
-    if (r.status === 401) { showAuth(); throw new NeedsSignin(); }
+    if (r.status === 401) { showAuth(j.reason); throw new NeedsSignin(); }
     if (!r.ok) { const e = new Error(j.message || j.error || ('HTTP ' + r.status)); e.code = j.error; e.status = r.status; throw e; }
     return j;
   }
@@ -549,8 +554,11 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   });
 
   // ---------------------------------------------------------------- sign in / create account
-  function showAuth() {
-    $('#app').hidden = true; $('#open-settings').hidden = true; $('#auth').hidden = false;
+  const SIGNOUT = {account_missing: "You were signed out: your account couldn't be read from storage. Sign in again.",
+    password_changed: 'Your password was changed on another device. Sign in with the new one.'};
+  function showAuth(reason) {
+    $('#app').hidden = true; $('#open-settings').hidden = true; $('#settings').open && $('#settings').close(); $('#auth').hidden = false;
+    if (reason && SIGNOUT[reason]) hint(SIGNOUT[reason], 'err');
     (authMode === 'up' ? $('#auth-name') : $('#auth-user')).focus();
   }
   let authMode = 'in', check = null, authState = null, needsSetup = false;
@@ -593,12 +601,15 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
       if (authPass.value.length < 8) { hint('Use at least 8 characters for your password.', 'err'); return; }
       body.name = $('#auth-name').value.trim();
     } else if (needsSetup) body.name = $('#auth-name').value.trim();
-    authGo.disabled = true;
+    const label = authGo.textContent;
+    authGo.disabled = true; authGo.classList.add('busy');
+    authGo.textContent = authMode === 'up' ? 'Creating account…' : 'Signing in…';
+    const done = () => { authGo.disabled = false; authGo.classList.remove('busy'); authGo.textContent = label; };
     try {
       const r = await api(authMode === 'up' ? '/api/signup' : '/api/signin', body);
-      authPass.value = ''; ME = r.user; start();
+      authPass.value = ''; done(); ME = r.user; start();
     } catch (e) {
-      authGo.disabled = false;
+      done();
       if (e.code === 'setup') {
         // An account made before passwords: confirm the name on it and choose a password now.
         needsSetup = true; $('#f-name').hidden = false; $('#auth-name').required = true;

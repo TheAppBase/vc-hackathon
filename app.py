@@ -15,7 +15,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import datetime as dt  # noqa: E402
-import hashlib  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
@@ -24,7 +23,8 @@ import time  # noqa: E402
 from functools import wraps  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from flask import Flask, jsonify, request, session  # noqa: E402
+from flask import Flask, g, jsonify, request, session  # noqa: E402
+from flask.sessions import SecureCookieSessionInterface  # noqa: E402
 from werkzeug.security import check_password_hash, generate_password_hash  # noqa: E402
 
 import engine  # noqa: E402
@@ -34,10 +34,20 @@ import store  # noqa: E402
 from env import env, scrub  # noqa: E402
 
 app = Flask(__name__)
-# Sessions must survive across serverless instances, so the key has to be stable. Falls back to one derived from the
-# Blob token (also a server secret) so a deploy works before SECRET_KEY is set.
-app.secret_key = env("SECRET_KEY") or (hashlib.sha256(("last-touch:" + store.TOKEN).encode()).hexdigest() if store.TOKEN
-                                             else secrets.token_hex(32))
+
+
+class SharedKeySessions(SecureCookieSessionInterface):
+    """Sessions must verify on every serverless instance, so the signing key must be the same everywhere: SECRET_KEY,
+    or else one random key kept in the store and shared by all instances. Resolved on first use (inside a request, so
+    Vercel's OIDC credentials are available)."""
+
+    def get_signing_serializer(self, app):
+        if not app.secret_key:
+            app.secret_key = env("SECRET_KEY") or store.shared_secret()
+        return super().get_signing_serializer(app)
+
+
+app.session_interface = SharedKeySessions()
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=bool(os.getenv("VERCEL")),
                   PERMANENT_SESSION_LIFETIME=dt.timedelta(days=30))
 
@@ -115,10 +125,15 @@ def public(user: dict) -> dict:
 
 def current() -> dict | None:
     u = session.get("u")
-    user = load_user(u) if u else None
+    if not u:
+        g.signout = None
+        return None
+    user = load_user(u)
     # A password change bumps pw_ver, which signs out every other device. Only a newer pw_ver than the session's signs
     # out: an older one means the read was stale, never that the password changed.
-    if u and (not user or user.get("pw_ver", 0) > session.get("pv", 0)):
+    if not user or user.get("pw_ver", 0) > session.get("pv", 0):
+        g.signout = "password_changed" if user else "account_missing"
+        print(f"signed out @{u}: {g.signout} (store: {store.mode()})", flush=True)
         session.clear()
         return None
     return user
@@ -138,7 +153,7 @@ def login_required(fn):
     def wrapper(*a, **kw):
         user = current()
         if not user:
-            return jsonify({"error": "signin"}), 401
+            return jsonify({"error": "signin", "reason": g.get("signout")}), 401
         if not session.get("sid"):
             session["sid"] = f"lt-{user['username']}-{secrets.token_hex(6)}"
         return fn(user, *a, **kw)
@@ -549,10 +564,18 @@ def api_settings(user):
     return jsonify({"user": public(user)})
 
 
+@app.get("/api/health")
+def api_health():
+    """Non-secret setup check: which storage and session key this deployment is using."""
+    return jsonify({"store": store.KIND, "store_mode": store.mode(), "session_key": "SECRET_KEY" if env("SECRET_KEY") else
+                    "shared key in the store", "prism": guard.live(), "akta": ix.AKTA.live, "nicrron": ix.LLM_CLIENT.live,
+                    "roundtable": ix.ROUNDTABLE.live})
+
+
 @app.get("/api/integrations")
 @login_required
 def api_integrations(user):
-    out = {"store": "Vercel Blob (private)" if store.LIVE else "local files (no BLOB_READ_WRITE_TOKEN)",
+    out = {"store": store.mode(),
            "nicrron": ix.LLM_CLIENT.live, "akta": {"live": ix.AKTA.live, "paid": ix.AKTA.use_paid, "error": ix.AKTA.error},
            "roundtable": {"live": ix.ROUNDTABLE.live, "error": ix.ROUNDTABLE.error}, "prism": {"configured": guard.live()}}
     if guard.live():
@@ -769,7 +792,7 @@ PAGE = (Path(__file__).parent / "page.html").read_text()
 @app.get("/")
 def index():
     data = {"icons": ICONS, "interview": INTERVIEW, "prism": guard.live(), "llm": ix.LLM_CLIENT.live, "akta": ix.AKTA.live,
-            "store": "Vercel Blob" if store.LIVE else "local files"}
+            "store": store.mode()}
     blob = json.dumps(data).replace("</", "<\\/")
     return PAGE.replace("__DATA__", blob)
 
