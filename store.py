@@ -11,6 +11,7 @@ Layout:
   actions/<username>/<id>.json     every write the agent proposed, and what happened to it
   akta/<hash>.json                 akta.pro lookups, shared by the team
   config/session-secret.json       the session signing key when SECRET_KEY is not set, shared by every server instance
+  attempts/<username>/<n>.json     reserves a username's one password try per 10-second window (deleted after)
 """
 from __future__ import annotations
 

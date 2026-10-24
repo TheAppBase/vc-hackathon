@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import datetime as dt  # noqa: E402
+import math  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
@@ -53,7 +54,7 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", S
 
 USER_RE = re.compile(r"^[a-z0-9_.-]{2,30}$")
 MIN_PASSWORD = 8
-MAX_FAILS, LOCK_MINUTES = 8, 15
+ATTEMPT_SECONDS = 10  # one password attempt per username per 10 seconds, and every attempt takes 10 seconds
 INTERVIEW = [
     {"key": "role", "q": "Hi {name}, I'm your new agent. After every event or meeting, record a quick note and I'll keep track of "
                          "who you met and what's next. First, what's your role?",
@@ -450,7 +451,38 @@ def password_problem(pw: str) -> str | None:
 def set_password(user: dict, pw: str):
     user["password"] = generate_password_hash(pw)
     user["pw_ver"] = user.get("pw_ver", 0) + 1
-    user.pop("login", None)
+
+
+def claim_attempt(u: str) -> int:
+    """Reserve this username's one password attempt for the next 10 seconds. Returns 0 if reserved, else seconds to wait.
+
+    The reservation is a blob created with overwrite=False, so even many requests sent at once get one attempt."""
+    t = time.time()
+    window = int(t // ATTEMPT_SECONDS)
+    prev = store.get(f"attempts/{u}/{window - 1}.json")
+    if prev and t - prev.get("t", 0) < ATTEMPT_SECONDS:
+        return max(1, math.ceil(ATTEMPT_SECONDS - (t - prev["t"])))
+    try:
+        store.put(f"attempts/{u}/{window}.json", {"t": t}, overwrite=False)
+    except store.Exists:
+        cur = store.get(f"attempts/{u}/{window}.json") or {"t": t}
+        return max(1, math.ceil(ATTEMPT_SECONDS - (t - cur.get("t", t))))
+    g.attempt = f"attempts/{u}/{window}.json"
+    return 0
+
+
+def finish_attempt(started: float):
+    """Make every attempt take ATTEMPT_SECONDS, right or wrong, then drop the reservation (its window is over)."""
+    time.sleep(max(0.0, ATTEMPT_SECONDS - (time.time() - started)))
+    if g.get("attempt"):
+        try:
+            store.delete(g.attempt)
+        except Exception:
+            pass
+
+
+def too_soon(wait: int):
+    return jsonify({"error": f"One try every {ATTEMPT_SECONDS} seconds. Wait {wait}s and try again.", "retry_after": wait}), 429
 
 
 @app.post("/api/signup")
@@ -477,52 +509,54 @@ def api_signup():
 def api_signin():
     b = request.get_json(silent=True) or {}
     u, pw = norm(b.get("username")), str(b.get("password") or "")
-    user = load_user(u)
-    if not user:
+    if not USER_RE.match(u):
         return jsonify({"error": "Wrong username or password."}), 403
-    login = user.get("login") or {}
-    locked = login.get("locked_until")
-    if locked and _ts(locked) > dt.datetime.now(dt.timezone.utc):
-        return jsonify({"error": f"Too many wrong passwords. Try again after {_ts(locked).strftime('%H:%M')} UTC."}), 429
-    if not user.get("password"):
-        # Accounts made before passwords existed: prove it's you with the account's name, then choose a password.
-        name = str(b.get("name") or "")
-        if not name:
-            return jsonify({"error": "setup", "message": "This account doesn't have a password yet. Enter the name on the account "
-                                                         "and choose a password."}), 409
-        if " ".join(name.lower().split()) != " ".join(user["name"].lower().split()) or password_problem(pw):
-            return jsonify({"error": password_problem(pw) or "That name doesn't match this username."}), 403
-        set_password(user, pw)
-        save_user(user)
+    wait = claim_attempt(u)
+    if wait:
+        return too_soon(wait)
+    started = time.time()
+    try:
+        user = load_user(u)
+        if not user:
+            return jsonify({"error": "Wrong username or password."}), 403
+        if not user.get("password"):
+            # Accounts made before passwords existed: prove it's you with the account's name, then choose a password.
+            name = str(b.get("name") or "")
+            if not name:
+                return jsonify({"error": "setup", "message": "This account doesn't have a password yet. Enter the name on the "
+                                                             "account and choose a password."}), 409
+            if " ".join(name.lower().split()) != " ".join(user["name"].lower().split()) or password_problem(pw):
+                return jsonify({"error": password_problem(pw) or "That name doesn't match this username."}), 403
+            set_password(user, pw)
+            save_user(user)
+        elif not check_password_hash(user["password"], pw):
+            return jsonify({"error": "Wrong username or password."}), 403
         start_session(user)
         return jsonify({"user": public(user)})
-    if not check_password_hash(user["password"], pw):
-        fails = login.get("fails", 0) + 1
-        user["login"] = {"fails": fails}
-        if fails >= MAX_FAILS:
-            user["login"] = {"fails": 0, "locked_until": (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=LOCK_MINUTES)).isoformat()}
-        save_user(user)
-        return jsonify({"error": "Wrong username or password."}), 403
-    if login:
-        user.pop("login", None)
-        save_user(user)
-    start_session(user)
-    return jsonify({"user": public(user)})
+    finally:
+        finish_attempt(started)
 
 
 @app.post("/api/password")
 @login_required
 def api_password(user):
     b = request.get_json(silent=True) or {}
-    if user.get("password") and not check_password_hash(user["password"], str(b.get("current") or "")):
-        return jsonify({"error": "Your current password is wrong."}), 403
     pw = str(b.get("new") or "")
     if password_problem(pw):
         return jsonify({"error": password_problem(pw)}), 400
-    set_password(user, pw)
-    save_user(user)
-    start_session(user)  # keep this device signed in; every other device is signed out
-    return jsonify({"ok": True})
+    wait = claim_attempt(user["username"])
+    if wait:
+        return too_soon(wait)
+    started = time.time()
+    try:
+        if user.get("password") and not check_password_hash(user["password"], str(b.get("current") or "")):
+            return jsonify({"error": "Your current password is wrong."}), 403
+        set_password(user, pw)
+        save_user(user)
+        start_session(user)  # keep this device signed in; every other device is signed out
+        return jsonify({"ok": True})
+    finally:
+        finish_attempt(started)
 
 
 @app.post("/api/signout")

@@ -4,7 +4,7 @@
 
 **Built on the event notes people record, plus akta.pro.** No Google or WhatsApp integrations and no mock data. After an event or a meeting, you tap the mic and say who you met. The agent does the rest, and checks every company on akta.pro (the agents' web search).
 
-1. **Sign in or create an account.** Create an account with your name, a username (it checks availability as you type) and a password of at least 8 characters. Sign in later with your username and password. Passwords are stored hashed; 8 wrong tries lock the account for 15 minutes; changing your password in Settings signs out your other devices.
+1. **Sign in or create an account.** Create an account with your name, a username (it checks availability as you type) and a password of at least 8 characters. Sign in later with your username and password. Passwords are stored hashed. Each username gets one password try every 10 seconds, and every try deliberately takes 10 seconds, right or wrong (the button counts down), so guessing is slow without ever locking anyone out. Changing your password in Settings signs out your other devices.
 2. **Build your agent.** A four-question interview (role, sectors and stages, the signal you trust, hard no's). Your answers become your agent's scoring weights.
 3. **Record a note.** The mic fills the chat box live and has no time limit. It works during the interview too, and you can also type. For example: "Met Jonah Weiss from Patchbay at the Deal Flow hackathon. Ex-Stripe infra, webhook API, 1,800 GitHub stars, raising $1.2M pre-seed. Next step: intro to Cara by Monday." The note saves straight away (no approval). The agent reads out the founder, company, event, traction and next step (Nicrron when configured, keyword rules otherwise), and looks the company up on akta.pro.
 4. **Who have I been talking to?** Every founder in your notes, where you met, the latest next step, and what's due or overdue.
@@ -39,4 +39,4 @@ Without `BLOB_READ_WRITE_TOKEN`, data is stored in `runtime/store/` (local devel
 - `engine.py`: note extraction rules, follow-up dates and scoring
 - `integrations.py`: PRISM (tracing, sessions, setup doctor), Nicrron, akta.pro and Roundtable
 - `env.py`: reads keys from the environment (trimming stray newlines) and scrubs secrets out of anything shown or logged
-- `store.py`: firm memory on Vercel Blob (`users/`, `notes/`, `actions/`, `akta/` lookup cache)
+- `store.py`: firm memory on Vercel Blob (`users/`, `notes/`, `actions/`, `akta/` lookup cache, `attempts/` password-try reservations)

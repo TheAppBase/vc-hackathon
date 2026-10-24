@@ -156,7 +156,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     const r = await fetch(url, opts);
     let j = {}; try { j = await r.json(); } catch (e) { j = {}; }
     if (r.status === 401) { showAuth(j.reason); throw new NeedsSignin(); }
-    if (!r.ok) { const e = new Error(j.message || j.error || ('HTTP ' + r.status)); e.code = j.error; e.status = r.status; throw e; }
+    if (!r.ok) { const e = new Error(j.message || j.error || ('HTTP ' + r.status)); e.code = j.error; e.status = r.status; e.retryAfter = j.retry_after; throw e; }
     return j;
   }
 
@@ -479,11 +479,19 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
       $('#signout').onclick = async () => { await api('/api/signout', {}); location.href = '/'; };
       $('#pw-form').onsubmit = async (ev) => {
         ev.preventDefault();
-        const h = $('#pw-hint');
+        const h = $('#pw-hint'), btn = $('#pw-form button');
+        btn.disabled = true; btn.classList.add('busy');
+        const stop = countdown(btn, 'Checking password…', 10);
+        const done = () => { stop(); btn.disabled = false; btn.classList.remove('busy'); btn.textContent = 'Change password'; };
         try {
           await api('/api/password', {current: $('#pw-cur').value, new: $('#pw-new').value});
-          $('#pw-cur').value = $('#pw-new').value = ''; h.textContent = 'Password changed. Other devices are signed out.'; h.className = 'hint ok';
-        } catch (e) { if (!(e instanceof NeedsSignin)) { h.textContent = e.message; h.className = 'hint err'; } }
+          done(); $('#pw-cur').value = $('#pw-new').value = ''; h.textContent = 'Password changed. Other devices are signed out.'; h.className = 'hint ok';
+        } catch (e) {
+          done();
+          if (e instanceof NeedsSignin) return;
+          h.textContent = e.message; h.className = 'hint err';
+          if (e.status === 429 && e.retryAfter) waitThen(btn, 'Change password', e.retryAfter);
+        }
       };
       const redo = $('#redo'); if (redo) redo.onclick = () => { dlg.close(); run(startInterview); };
       dlg.querySelectorAll('input[name=mode]').forEach((r) => { r.onchange = async () => {
@@ -564,6 +572,19 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   let authMode = 'in', check = null, authState = null, needsSetup = false;
   const authUser = $('#auth-user'), authHint = $('#auth-hint'), authGo = $('#auth-go'), authPass = $('#auth-pass');
   const hint = (text, cls) => { authHint.textContent = text || ''; authHint.className = 'hint' + (cls ? ' ' + cls : ''); };
+  // Password checks take about 10 seconds on purpose (one try per 10 seconds), so count down on the button.
+  function countdown(btn, text, secs) {
+    let n = secs;
+    const tick = () => { btn.textContent = n > 0 ? `${text} ${n}s` : text; n -= 1; };
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }
+  function waitThen(btn, label, secs) {
+    btn.disabled = true;
+    const stop = countdown(btn, 'Try again in', secs);
+    setTimeout(() => { stop(); btn.disabled = false; btn.textContent = label; }, secs * 1000);
+  }
   function setMode(m) {
     authMode = m; needsSetup = false;
     $('#tab-in').classList.toggle('on', m === 'in'); $('#tab-up').classList.toggle('on', m === 'up');
@@ -603,14 +624,15 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     } else if (needsSetup) body.name = $('#auth-name').value.trim();
     const label = authGo.textContent;
     authGo.disabled = true; authGo.classList.add('busy');
-    authGo.textContent = authMode === 'up' ? 'Creating account…' : 'Signing in…';
-    const done = () => { authGo.disabled = false; authGo.classList.remove('busy'); authGo.textContent = label; };
+    const stop = authMode === 'up' ? (authGo.textContent = 'Creating account…', () => {}) : countdown(authGo, 'Checking password…', 10);
+    const done = () => { stop(); authGo.disabled = false; authGo.classList.remove('busy'); authGo.textContent = label; };
     try {
       const r = await api(authMode === 'up' ? '/api/signup' : '/api/signin', body);
       authPass.value = ''; done(); ME = r.user; start();
     } catch (e) {
       done();
-      if (e.code === 'setup') {
+      if (e.status === 429 && e.retryAfter) { hint(e.message, 'err'); waitThen(authGo, label, e.retryAfter); }
+      else if (e.code === 'setup') {
         // An account made before passwords: confirm the name on it and choose a password now.
         needsSetup = true; $('#f-name').hidden = false; $('#auth-name').required = true;
         authPass.autocomplete = 'new-password'; authPass.placeholder = 'Choose a password (8+ characters)';
