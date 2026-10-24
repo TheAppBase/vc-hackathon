@@ -419,7 +419,7 @@ def api_settings(user):
     b = request.get_json(silent=True) or {}
     if b.get("mode") in ("ask", "auto"):
         if b["mode"] == "auto" and not guard.live():
-            return jsonify({"error": "Auto mode needs PRISM (PRISMTRACE_API_KEY and PRISMTRACE_PROJECT_ID)."}), 400
+            return jsonify({"error": "Auto mode needs PRISM (PRISM_API_KEY and PRISM_PROJECT_ID)."}), 400
         user.setdefault("settings", {})["mode"] = b["mode"]
         save_user(user)
     return jsonify({"user": public(user)})

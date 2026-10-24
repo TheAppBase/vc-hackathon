@@ -30,7 +30,7 @@ Without `BLOB_READ_WRITE_TOKEN`, data is stored in `runtime/store/` (local devel
 ## Deploy (Vercel)
 1. Import the repo. `app.py` exports the Flask `app`, so no framework preset is needed.
 2. Storage → create a **private** Blob store and connect it to the project (this adds `BLOB_READ_WRITE_TOKEN`).
-3. Set `SECRET_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `PRISMTRACE_API_KEY`, `PRISMTRACE_PROJECT_ID` (and optionally `NICRRON_API_KEY`).
+3. Set `SECRET_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `PRISM_API_KEY`, `PRISM_PROJECT_ID` (and optionally `NICRRON_API_KEY`).
 4. Google Cloud: create an OAuth client of type "Web application" with redirect URI `https://<your-domain>/auth/google/callback`. Enable the Gmail API, Google Calendar API and Google Chat API. The Chat API also needs a Chat app configured in the same project, even for reading. While the OAuth consent screen is in testing, add each user as a test user (Gmail scopes are restricted).
 
 ## Files

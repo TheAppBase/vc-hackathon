@@ -18,8 +18,8 @@ class Tracer:
     """PRISM by Block Convey. Logs every LLM call (trace_llm)."""
 
     def __init__(self):
-        self.key = os.getenv("PRISMTRACE_API_KEY")
-        self.project = os.getenv("PRISMTRACE_PROJECT_ID")
+        self.key = os.getenv("PRISM_API_KEY") or os.getenv("PRISMTRACE_API_KEY")
+        self.project = os.getenv("PRISM_PROJECT_ID") or os.getenv("PRISMTRACE_PROJECT_ID")
         self.live = bool(self.key and self.project)
         self.error = None
         self.pt = None
