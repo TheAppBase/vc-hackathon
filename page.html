@@ -418,7 +418,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     const r = await tool(`akta.pro find_companies("${q || ME.profile.focus}")`, () => api('/api/source' + (q ? '?q=' + encodeURIComponent(q) : '')), {kind: 'globe',
       result: (r) => `${r.companies.length} companies${r.error ? ` · ${r.error}` : ''}`});
     if (!r.companies.length) { say(`akta.pro returned no companies for "${esc(r.query)}".${r.error ? ` (${esc(r.error)})` : ''}`); return; }
-    say(`Companies on akta.pro that fit "${esc(r.query)}". ${r.paid ? '' : 'Pro lists are off (AKTA_USE_PAID=0), so these are plain search results. '}Met one of them? Record a note and I\'ll track it.`);
+    say(`Companies on akta.pro for "${esc(r.query)}". Met one of them? Record a note and I\'ll track it.`);
     block(`<div class="card rows">${r.companies.map((c) => `<div class="row"><span class="src">${ic('globe', 16)}</span>
       <div><b>${esc(c.name)}</b>${c.website ? ` · ${esc(c.website)}` : ''}${c.description ? `<small>${esc(c.description)}</small>` : ''}</div>
       <div class="right">${c.mine ? '<span class="pill s-scheduled">In your notes</span>' : c.known.length ? `<span class="pill s-scheduled">Known to ${esc(c.known[0].who)}</span>` : '<span class="pill">New</span>'}</div></div>`).join('')}</div>`);
@@ -459,8 +459,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
         <input type="password" id="pw-cur" placeholder="Current password" autocomplete="current-password" aria-label="Current password">
         <input type="password" id="pw-new" placeholder="New password (8+ characters)" autocomplete="new-password" aria-label="New password">
         <button class="btn">Change password</button></form><p class="hint" id="pw-hint"></p>
-      <h3>Your agent</h3>${p ? `<ul class="list"><li>${agentAvatar()}<span><b>${esc(ME.first)}'s agent</b><small>${esc(p.sectors.join(', '))} · ${esc(p.stages.join(', '))}</small></span></li></ul>
-        <button class="btn" id="redo">Redo the interview</button>` : '<p class="small">Finish the interview in the chat to build your agent.</p>'}
+      <h3>Your agent</h3>${p ? `<ul class="list"><li>${agentAvatar()}<span><b>${esc(ME.first)}'s agent</b><small>${esc(p.sectors.join(', '))} · ${esc(p.stages.join(', '))}</small></span></li></ul>` : '<p class="small">Finish the interview in the chat to build your agent.</p>'}
       <h3>Safety</h3><div class="seg">
         <label class="${ME.mode === 'ask' ? 'on' : ''}"><input type="radio" name="mode" value="ask" ${ME.mode === 'ask' ? 'checked' : ''}><span><b>Ask mode (PRISM off)</b><small>Nothing is sent to PRISM. Your notes save straight away.</small></span></label>
         <label class="${ME.mode === 'auto' ? 'on' : ''} ${D.prism ? '' : 'off'}"><input type="radio" name="mode" value="auto" ${ME.mode === 'auto' ? 'checked' : ''} ${D.prism ? '' : 'disabled'}><span><b>Auto mode (PRISM on)</b><small>${D.prism ? 'PRISM watches everything the agent does and reviews each note before it is saved. It can block an unsafe note; you never have to approve one.' : 'Needs PRISMTRACE_API_KEY on the server.'}</small></span></label>
@@ -493,7 +492,6 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
           if (e.status === 429 && e.retryAfter) waitThen(btn, 'Change password', e.retryAfter);
         }
       };
-      const redo = $('#redo'); if (redo) redo.onclick = () => { dlg.close(); run(startInterview); };
       dlg.querySelectorAll('input[name=mode]').forEach((r) => { r.onchange = async () => {
         try { ME = (await api('/api/settings', {mode: r.value})).user; sys(ME.mode === 'auto' ? 'Auto mode: PRISM watches the agent and reviews every note.' : 'Ask mode: PRISM is off.'); }
         catch (e) { if (!(e instanceof NeedsSignin)) sys(e.message); }

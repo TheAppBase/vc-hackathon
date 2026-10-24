@@ -24,9 +24,13 @@ SECRET_RES = [
     (re.compile(r"\b(?:password|passcode|pin code|pin)\s*(?:is|:|=)\s*\S+", re.I), "contains a password"),
 ]
 MAX_NOTE = 8000
-PASS = {"pass", "passed", "safe", "approved", "approve", "allow", "allowed", "compliant", "low"}
-FAIL = {"fail", "failed", "unsafe", "blocked", "block", "deny", "denied", "flagged", "violation", "reject", "rejected",
-        "high", "critical", "non_compliant", "noncompliant"}
+# PRISM scores many things (task completion, efficiency, reliability...). Only guardrail / policy / safety results, or an
+# explicit block decision, may stop a note; a low quality score must never block it.
+SAFETY = re.compile(r"guardrail|polic|safety|unsafe|harm|toxic|pii|privacy|secret|jailbreak|injection|abuse|violen|hate|"
+                    r"sexual|security|compliance|moderation", re.I)
+BLOCK_WORDS = {"block", "blocked", "deny", "denied", "reject", "rejected", "unsafe", "disallow", "disallowed"}
+FAIL = {"fail", "failed", "flagged", "violation", "high", "critical", "non_compliant", "noncompliant"} | BLOCK_WORDS
+PASS = {"pass", "passed", "safe", "approved", "approve", "allow", "allowed", "compliant", "low", "none", "ok"}
 PENDING = {"pending", "queued", "running", "processing", "in_progress", "evaluating"}
 
 
@@ -45,44 +49,52 @@ def redact(text: str) -> tuple[str, list[str]]:
 
 
 def _decide(ev) -> tuple[str, str]:
-    """Read PRISM's evaluation defensively. Returns (allow|block|pending|unknown, reason)."""
+    """Read PRISM's evaluation. Returns (allow|block|pending|unknown, reason). Blocks only on safety signals."""
     if ev is None:
         return "unknown", "PRISM returned no evaluation"
     found: list[tuple[str, str]] = []
 
-    def walk(x, key=""):
+    def walk(x, path: tuple):
+        key = path[-1] if path else ""
+        safety = any(SAFETY.search(p) for p in path)
+        where = ".".join(path) or "evaluation"
         if isinstance(x, dict):
             for k, v in x.items():
-                walk(v, k.lower())
+                walk(v, path + (str(k).lower(),))
         elif isinstance(x, list):
-            if key in ("violations", "flags", "issues", "blocked_reasons", "failures") and x:
-                found.append(("block", f"{key}: {json.dumps(x, default=str)[:160]}"))
-            for v in x:
-                walk(v, key)
+            if x and (key in ("violations", "guardrail_violations", "policy_violations", "triggered_guardrails")
+                      or (safety and key in ("flags", "issues", "triggered", "failures"))):
+                found.append(("block", f"{where}: {json.dumps(x, default=str)[:160]}"))
+            for i, v in enumerate(x):
+                walk(v, path)
         elif isinstance(x, bool):
+            if not safety:
+                return
             if key in ("passed", "pass", "safe", "approved", "allowed", "compliant"):
-                found.append(("allow" if x else "block", key))
-            elif key in ("blocked", "flagged", "unsafe", "violation", "is_violation"):
-                found.append(("block" if x else "allow", key))
-        elif isinstance(x, str) and key in ("status", "verdict", "result", "decision", "outcome", "risk", "risk_level",
-                                             "evaluation_status", "label"):
+                found.append(("allow" if x else "block", f"{where}={x}"))
+            elif key in ("blocked", "flagged", "triggered", "unsafe", "violation", "is_violation"):
+                found.append(("block" if x else "allow", f"{where}={x}"))
+        elif isinstance(x, str):
             v = x.strip().lower()
-            if v in FAIL:
-                found.append(("block", f"{key}={v}"))
-            elif v in PENDING:
-                found.append(("pending", f"{key}={v}"))
-            elif v in PASS:
-                found.append(("allow", f"{key}={v}"))
+            if key in ("decision", "verdict", "action") and v in BLOCK_WORDS:
+                found.append(("block", f"{where}={v}"))
+            elif key in ("status", "evaluation_status", "state") and v in PENDING and len(path) <= 2:
+                found.append(("pending", f"{where}={v}"))
+            elif safety and key in ("status", "verdict", "result", "decision", "outcome", "risk", "risk_level", "severity", "label"):
+                if v in FAIL:
+                    found.append(("block", f"{where}={v}"))
+                elif v in PASS:
+                    found.append(("allow", f"{where}={v}"))
 
-    walk(ev)
+    walk(ev, ())
     for want in ("block", "pending", "allow"):
         hits = [r for d, r in found if d == want]
         if hits:
             return want, hits[0]
-    return "unknown", "PRISM's evaluation had no clear verdict"
+    return "unknown", "no guardrail or safety result in PRISM's evaluation"
 
 
-def review(agent: str, agent_id: str, session_id: str, action: dict, wait_s: float = 12.0) -> dict:
+def review(agent: str, agent_id: str, session_id: str, action: dict, wait_s: float = 8.0) -> dict:
     """Ask PRISM whether the agent may take this action."""
     pt = TRACER.pt
     if not pt:
@@ -104,9 +116,11 @@ def review(agent: str, agent_id: str, session_id: str, action: dict, wait_s: flo
         return {"decision": "unknown", "reason": "PRISM did not accept the review request"}
     deadline = time.time() + wait_s
     decision, why = "unknown", "PRISM did not answer in time"
+    last = None
     while time.time() < deadline:
         try:
-            decision, why = _decide(pt.get_trajectory_evaluation(tid))
+            last = pt.get_trajectory_evaluation(tid)
+            decision, why = _decide(last)
         except Exception as e:
             decision, why = "unknown", scrub(f"PRISM error: {e}")[:140]
         if decision in ("allow", "block"):
@@ -114,4 +128,4 @@ def review(agent: str, agent_id: str, session_id: str, action: dict, wait_s: flo
         time.sleep(1.5)
     if decision == "pending":
         decision, why = "unknown", "PRISM is still evaluating"
-    return {"decision": decision, "reason": why, "trajectory_id": tid}
+    return {"decision": decision, "reason": why, "trajectory_id": tid, "raw": scrub(json.dumps(last, default=str))[:2000] if last else None}

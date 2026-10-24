@@ -395,10 +395,10 @@ def api_note_save(user):
         act["status"], act["reason"] = "blocked", f"PRISM blocked this note: {act['review']['reason']}"
     else:
         note = {"id": act["id"], "text": text, "source": act["payload"]["source"], "extracted": extracted, "created_at": act["created_at"]}
-        if ix.AKTA.live and (extracted.get("company") or extracted.get("one_liner")):
+        if ix.AKTA.live and extracted.get("company"):
             t1, ix.AKTA.error = time.time(), None
-            note["akta"] = ix.AKTA.lookup(extracted.get("company"), extracted.get("one_liner"))
-            trace_tool(user, "akta.lookup", f"{extracted.get('company')} | {extracted.get('one_liner')}",
+            note["akta"] = ix.AKTA.lookup(extracted["company"])  # free Company Search only; no credits per note
+            trace_tool(user, "akta.lookup", extracted["company"],
                        json.dumps(note["akta"])[:500], t1, "error" if ix.AKTA.error and not note["akta"]["match"] else "success")
         try:
             store.put(f"notes/{user['username']}/{act['id']}.json", note)
@@ -578,6 +578,8 @@ def api_me():
 @app.post("/api/profile")
 @login_required
 def api_profile(user):
+    if user.get("profile"):
+        return jsonify({"error": "Your agent is already built from your interview."}), 409
     keys = {q["key"] for q in INTERVIEW}
     answers = {k: str(v)[:200] for k, v in (request.get_json(silent=True) or {}).items() if k in keys}
     user["answers"] = answers
@@ -695,19 +697,21 @@ def api_source(user):
         return jsonify({"error": "interview", "message": "Finish the interview first."}), 409
     if not ix.AKTA.live:
         return jsonify({"error": "akta", "message": "akta.pro isn't connected (AKTA_API_KEY on the server)."}), 409
-    query = str(request.args.get("q") or "").strip()[:120] or f"{profile['focus']} startups"
+    asked = str(request.args.get("q") or "").strip()[:120]
+    query = f"early-stage {asked} startups" if asked else f"startups in {profile['focus']}"
+    if not re.search(r"seed|series|stage|idea", query, re.I):
+        query += " at " + (" or ".join(s.replace("-", " ") for s in profile.get("stages", [])) or "early") + " stage"
     ix.AKTA.error = None
-    if ix.AKTA.use_paid:
-        rows = ix.AKTA.companies_like(query, 10)
-    else:
-        rows = ix.AKTA.company_search(query)
+    if not ix.AKTA.use_paid:
+        return jsonify({"error": "akta", "message": "Sourcing uses akta.pro List Generation, which is turned off (AKTA_USE_PAID=0)."}), 409
+    rows = ix.AKTA.companies_like(query, 10)
     mine = {k for r in founders_from(notes_of(user["username"])) for k in (_key(r.get("company")), _key(r.get("founder"))) if k}
     mem = team_memory(user)
     out = []
     for c in rows[:12]:
         name = ix._name(c)
         out.append({"name": name, "website": c.get("website") or c.get("domain"),
-                    "description": str(c.get("description") or c.get("short_description") or "")[:200] or None,
+                    "description": str(c.get("product_category") or c.get("description") or "")[:200] or None,
                     "mine": _key(name) in mine, "known": who_knows(mem, [name])})
     trace_tool(user, "akta.source", query, f"{len(out)} companies" + (f"; {ix.AKTA.error}" if ix.AKTA.error and not out else ""), t0,
                "error" if ix.AKTA.error and not out else "success")
@@ -725,7 +729,7 @@ def api_lookup(user):
     if not ix.AKTA.live:
         return jsonify({"error": "akta", "message": "akta.pro isn't connected (AKTA_API_KEY on the server)."}), 409
     ix.AKTA.error = None
-    ak = ix.AKTA.lookup(q, None)
+    ak = ix.AKTA.lookup(q, similar=True)
     trace_tool(user, "akta.lookup", q, json.dumps(ak)[:500], t0)
     return jsonify({"query": q, "akta": ak, "line": akta_line(ak), "known": who_knows(team_memory(user), [q]),
                     "error": ix.AKTA.error if not ak.get("match") else None})

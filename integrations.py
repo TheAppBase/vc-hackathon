@@ -11,7 +11,6 @@ import hashlib
 import json
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
@@ -203,9 +202,10 @@ def _name(x: dict) -> str:
 
 
 class Akta:
-    """akta.pro: company search and industry search (free), generated company lists (Pro credits).
+    """akta.pro (docs.akta.pro): Company Search and Industry Search are free; List Generation costs credits
+    (about 6 for 10 companies from a natural-language query), so it only runs when someone asks to source or look up.
 
-    Results are cached in the firm memory (akta/<hash>.json, 7 days) so the whole team shares one lookup.
+    Results are cached in the firm memory (akta/<hash>.json) so the whole team shares one lookup.
     """
 
     TTL = 7 * 24 * 3600
@@ -217,24 +217,36 @@ class Akta:
         self.use_paid = env("AKTA_USE_PAID", default="1") == "1"
         self.error = None
 
-    def _req(self, method: str, path: str, params=None, body=None):
+    def _req(self, method: str, path: str, params=None, body=None, ttl: int | None = None):
         if not self.live:
             return None
         ck = "akta/" + hashlib.sha1(json.dumps([method, path, params, body], sort_keys=True).encode()).hexdigest() + ".json"
         try:
             hit = store.get(ck)
-            if hit and time.time() - hit.get("t", 0) < self.TTL:
+            if hit and time.time() - hit.get("t", 0) < (ttl or self.TTL):
                 return hit["v"]
         except Exception:
             pass
         try:
-            r = httpx.request(method, self.base + path, params=params, json=body, headers={"x-api-key": self.key}, timeout=20)
-            if r.status_code == 204:
-                return {}
-            r.raise_for_status()
-            val = r.json()
-        except Exception as e:
-            self.error = scrub(f"Akta {path} failed: {e}")[:200]
+            # akta.pro paths end in "/" (without it the API answers 307); follow redirects in case that changes.
+            r = httpx.request(method, self.base + path, params=params, json=body, headers={"x-api-key": self.key},
+                              timeout=30, follow_redirects=True)
+        except httpx.HTTPError as e:
+            self.error = scrub(f"akta.pro {path}: {e}")[:200]
+            return None
+        if r.status_code >= 400:
+            try:
+                detail = r.json().get("detail") or r.json().get("message") or r.text
+            except ValueError:
+                detail = r.text
+            hint = {401: "check AKTA_API_KEY", 403: "your akta.pro plan doesn't include this", 429: "rate limited, try again shortly",
+                    422: "akta.pro rejected the request"}.get(r.status_code, "")
+            self.error = scrub(f"akta.pro {path} {r.status_code}: {str(detail)[:140]}" + (f" ({hint})" if hint else ""))[:220]
+            return None
+        try:
+            val = r.json() if r.content else {}
+        except ValueError:
+            self.error = "akta.pro returned something that isn't JSON"
             return None
         try:
             store.put(ck, {"t": time.time(), "v": val})
@@ -243,38 +255,37 @@ class Akta:
         return val
 
     def company_search(self, query: str) -> list[dict]:
-        return _items(self._req("GET", "/v1/company/search", params={"query": query})) if query else []
+        return _items(self._req("GET", "/v1/company/search/", params={"query": query})) if query else []
 
     def industry_search(self, query: str) -> list[dict]:
-        return _items(self._req("GET", "/v1/industry/search", params={"query": query, "level": "l4"})) if query else []
+        return _items(self._req("GET", "/v1/industry/search/", params={"query": query, "level": "l4"})) if query else []
 
-    def companies_like(self, query: str, limit: int = 8) -> list[dict]:
+    def companies_like(self, query: str, limit: int = 10) -> list[dict]:
+        """List Generation from a natural-language query (credits). Cached for a day."""
         if not self.use_paid or not query:
             return []
-        return _items(self._req("POST", "/v1/list/generate/companies/", body={"query": query, "limit": limit}))
+        return _items(self._req("POST", "/v1/list/generate/companies/", body={"query": query, "limit": min(limit, 20)},
+                                ttl=24 * 3600))
 
-    def lookup(self, company: str | None, about: str | None) -> dict:
-        """What akta.pro knows about a company: the matching record, its industry and similar companies."""
+    def lookup(self, company: str | None, similar: bool = False) -> dict:
+        """What akta.pro knows about a company: the matching record and its category (free), and with similar=True,
+        similar companies (List Generation, credits)."""
         out = {"live": self.live, "match": None, "industry": None, "similar": []}
-        if not self.live or not (company or about):
+        if not self.live or not company:
             return out
-        with ThreadPoolExecutor(3) as ex:
-            fm = ex.submit(self.company_search, company) if company else None
-            fi = ex.submit(self.industry_search, about or company)
-            like = about or (f"startups similar to {company}" if company else None)
-            fs = ex.submit(self.companies_like, like) if like else None
-            matches = fm.result() if fm else []
-            inds = fi.result()
-            similar = fs.result() if fs else []
+        matches = self.company_search(company)
         if matches:
             m = matches[0]
             out["match"] = {"name": _name(m), "website": m.get("website") or m.get("domain"),
                             "status": m.get("company_status") or m.get("status"),
                             "description": str(m.get("description") or m.get("short_description") or "")[:240] or None}
-        if inds:
-            out["industry"] = {"name": _name(inds[0]), "code": inds[0].get("code")}
-        out["similar"] = [{"name": _name(c), "website": c.get("website") or c.get("domain")} for c in similar[:5]
-                          if _name(c).lower() != (company or "").lower()]
+            if m.get("product_category"):
+                out["industry"] = {"name": str(m["product_category"])[:80]}
+        if similar and out["match"]:
+            about = (out["industry"] or {}).get("name")
+            like = self.companies_like(f"startups similar to {company}" + (f" ({about})" if about else ""), 6)
+            out["similar"] = [{"name": _name(c), "website": c.get("website") or c.get("domain")} for c in like
+                              if _name(c).lower() != company.lower()][:5]
         return out
 
 
