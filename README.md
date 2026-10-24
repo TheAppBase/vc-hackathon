@@ -18,8 +18,9 @@ Every person at the fund gets an agent. The agents share one firm memory and tal
 ```bash
 pip install -r requirements.txt
 cp .env.example .env      # add keys; every key is optional
-streamlit run app.py
+flask --app app run      # http://127.0.0.1:5000
 ```
+The original Streamlit UI still works: `pip install -r requirements-streamlit.txt && streamlit run streamlit_app.py`.
 Without keys it runs fully on cached or demo data, and every fallback is labelled in the UI.
 
 ## Sponsor tools (all four)
@@ -36,10 +37,12 @@ Without keys it runs fully on cached or demo data, and every fallback is labelle
 - **All people, funds and startups in `data/` are fictional.** Akta fixture comps list real companies by name only.
 
 ## Files
-- `app.py`: the Streamlit UI (Today's actions, Firm channel, Inbox triage, Briefs, Watchlist, Memory & traces)
+- `app.py`: the Flask UI for Vercel (`streamlit_app.py` is the original Streamlit UI) (Today's actions, Firm channel, Inbox triage, Briefs, Watchlist, Memory & traces)
 - `engine.py`: agents, rules, routing, follow-up rules, Watcher
 - `integrations.py`: Nicrron, Akta, PRISM, Roundtable, plus a cache
 - `data/`: synthetic inbox (14 messages), firm and partner profiles, firm-memory seed, Akta demo fixtures
 
 ## Deploy (live link for Devpost)
-Push to a public GitHub repo, then on share.streamlit.io create a new app from `app.py` and add the keys under Secrets as top-level TOML. This is a Streamlit server app, so it does not run on Vercel or other serverless hosts.
+Vercel: import the GitHub repo; `app.py` exports the Flask `app`, so no framework preset or build settings are needed.
+Add the keys under Settings → Environment Variables (`NICRRON_API_KEY`, `ROUNDTABLE_MCP_URL`, `ROUNDTABLE_MCP_TOKEN`).
+On Vercel, runtime files go to `/tmp/last-touch`. Every view is a URL (`?run=1&tab=briefs`), so the demo needs no server state.
