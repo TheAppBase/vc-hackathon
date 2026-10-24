@@ -1,16 +1,22 @@
-"""Optional AI integrations: PRISM (watches and guards the agent) and Nicrron (LLM that reads event notes).
+"""Integrations: PRISM (watches and guards the agent), Nicrron (LLM that reads event notes), Akta (akta.pro, the agents'
+web search for companies), Roundtable (mirror of the firm memory).
 
-Both are optional. Without NICRRON_API_KEY the app reads notes with keyword rules (engine.heuristic_note).
+All are optional and only ever return real data: a missing key turns that integration off, it never falls back to
+made-up data. Without NICRRON_API_KEY the app reads notes with keyword rules (engine.heuristic_note).
 PRISM is only used for users who pick Auto mode; in Ask mode nothing is sent to PRISM.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
+
+import store
 
 PRISM_HOST = os.getenv("PRISMTRACE_HOST", "https://api.prism.blockconvey.com").rstrip("/")
 # The project id is not a secret (it comes from PRISM's setup brief); the API key is, and only lives in the environment.
@@ -170,3 +176,185 @@ class LLM:
 
 
 LLM_CLIENT = LLM()
+
+
+# --------------------------------------------------------------------------- Akta (akta.pro by Wokelo)
+def _items(obj) -> list:
+    """Akta responses differ by endpoint; find the list of records defensively."""
+    if isinstance(obj, list):
+        return obj
+    if isinstance(obj, dict):
+        for k in ("data", "results", "companies", "articles", "items", "records", "industries", "news"):
+            v = obj.get(k)
+            if isinstance(v, list):
+                return v
+            if isinstance(v, dict):
+                inner = _items(v)
+                if inner:
+                    return inner
+        for v in obj.values():
+            if isinstance(v, list):
+                return v
+    return []
+
+
+def _name(x: dict) -> str:
+    return str(x.get("name") or x.get("company_name") or x.get("industry_name") or x.get("title") or "?")
+
+
+class Akta:
+    """akta.pro: company search and industry search (free), generated company lists (Pro credits).
+
+    Results are cached in the firm memory (akta/<hash>.json, 7 days) so the whole team shares one lookup.
+    """
+
+    TTL = 7 * 24 * 3600
+
+    def __init__(self):
+        self.key = os.getenv("AKTA_API_KEY")
+        self.base = os.getenv("AKTA_BASE_URL", "https://api.akta.pro/api").rstrip("/")
+        self.live = bool(self.key)
+        self.use_paid = os.getenv("AKTA_USE_PAID", "1") == "1"
+        self.error = None
+
+    def _req(self, method: str, path: str, params=None, body=None):
+        if not self.live:
+            return None
+        ck = "akta/" + hashlib.sha1(json.dumps([method, path, params, body], sort_keys=True).encode()).hexdigest() + ".json"
+        try:
+            hit = store.get(ck)
+            if hit and time.time() - hit.get("t", 0) < self.TTL:
+                return hit["v"]
+        except Exception:
+            pass
+        try:
+            r = httpx.request(method, self.base + path, params=params, json=body, headers={"x-api-key": self.key}, timeout=20)
+            if r.status_code == 204:
+                return {}
+            r.raise_for_status()
+            val = r.json()
+        except Exception as e:
+            self.error = f"Akta {path} failed: {str(e)[:160]}"
+            return None
+        try:
+            store.put(ck, {"t": time.time(), "v": val})
+        except Exception:
+            pass
+        return val
+
+    def company_search(self, query: str) -> list[dict]:
+        return _items(self._req("GET", "/v1/company/search", params={"query": query})) if query else []
+
+    def industry_search(self, query: str) -> list[dict]:
+        return _items(self._req("GET", "/v1/industry/search", params={"query": query, "level": "l4"})) if query else []
+
+    def companies_like(self, query: str, limit: int = 8) -> list[dict]:
+        if not self.use_paid or not query:
+            return []
+        return _items(self._req("POST", "/v1/list/generate/companies/", body={"query": query, "limit": limit}))
+
+    def lookup(self, company: str | None, about: str | None) -> dict:
+        """What akta.pro knows about a company: the matching record, its industry and similar companies."""
+        out = {"live": self.live, "match": None, "industry": None, "similar": []}
+        if not self.live or not (company or about):
+            return out
+        with ThreadPoolExecutor(3) as ex:
+            fm = ex.submit(self.company_search, company) if company else None
+            fi = ex.submit(self.industry_search, about or company)
+            like = about or (f"startups similar to {company}" if company else None)
+            fs = ex.submit(self.companies_like, like) if like else None
+            matches = fm.result() if fm else []
+            inds = fi.result()
+            similar = fs.result() if fs else []
+        if matches:
+            m = matches[0]
+            out["match"] = {"name": _name(m), "website": m.get("website") or m.get("domain"),
+                            "status": m.get("company_status") or m.get("status"),
+                            "description": str(m.get("description") or m.get("short_description") or "")[:240] or None}
+        if inds:
+            out["industry"] = {"name": _name(inds[0]), "code": inds[0].get("code")}
+        out["similar"] = [{"name": _name(c), "website": c.get("website") or c.get("domain")} for c in similar[:5]
+                          if _name(c).lower() != (company or "").lower()]
+        return out
+
+
+AKTA = Akta()
+
+
+# --------------------------------------------------------------------------- Roundtable (mirror of the firm memory)
+class Roundtable:
+    """Mirrors every saved note into Roundtable as a shared note, over MCP (Streamable HTTP).
+
+    Needs ROUNDTABLE_MCP_URL and ROUNDTABLE_MCP_TOKEN: the MCP URL and bearer key of a connection created for this app
+    at roundtable.bot (Agents -> Connect agent). Vercel Blob stays the source of truth; Roundtable is a copy.
+    """
+
+    def __init__(self):
+        self.url = os.getenv("ROUNDTABLE_MCP_URL")
+        self.token = os.getenv("ROUNDTABLE_MCP_TOKEN")
+        self.folder = os.getenv("ROUNDTABLE_FOLDER", "last-touch")
+        self.live = bool(self.url and self.token)
+        self.error = None if self.live or not self.url else "ROUNDTABLE_MCP_TOKEN is missing (the MCP URL needs its bearer key)"
+        self.session = None
+        self._rpc_id = 0
+        self._lock = threading.Lock()
+
+    def _rpc(self, method: str, params: dict | None = None, notify: bool = False):
+        headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json",
+                   "Accept": "application/json, text/event-stream"}
+        if self.session:
+            headers["Mcp-Session-Id"] = self.session
+        body = {"jsonrpc": "2.0", "method": method, **({"params": params} if params is not None else {})}
+        if not notify:
+            self._rpc_id += 1
+            body["id"] = self._rpc_id
+        r = httpx.post(self.url, headers=headers, json=body, timeout=15)
+        r.raise_for_status()
+        self.session = r.headers.get("mcp-session-id") or self.session
+        if notify:
+            return None
+        if r.headers.get("content-type", "").startswith("text/event-stream"):
+            msgs = [json.loads(line[5:]) for line in r.text.splitlines() if line.startswith("data:")]
+            msg = next(m for m in msgs if m.get("id") == body["id"])
+        else:
+            msg = r.json()
+        if msg.get("error"):
+            raise RuntimeError(msg["error"].get("message", msg["error"]))
+        return msg.get("result")
+
+    def save_note(self, title: str, markdown: str, request_id: str) -> str | None:
+        """Save one shared note. Returns Roundtable's note id, or None if it is off or failed (the error is kept)."""
+        if not self.live:
+            return None
+        with self._lock:
+            try:
+                if self._rpc_id == 0 or not self.session:
+                    self._rpc_id = 0
+                    self._rpc("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
+                                             "clientInfo": {"name": "last-touch", "version": "1.0"}})
+                    self._rpc("notifications/initialized", notify=True)
+                # Roundtable expects the tool arguments nested under "request".
+                res = self._rpc("tools/call", {"name": "save_note", "arguments": {"request": {
+                    "kind": "note", "folder": self.folder, "title": title, "content": markdown, "request_id": request_id}}}) or {}
+            except Exception as e:
+                self.error, self.session = f"Roundtable save_note failed: {str(e)[:160]}", None
+                return None
+        if res.get("isError"):
+            self.error = "Roundtable save_note failed: " + " ".join(c.get("text", "") for c in res.get("content", []))[:160]
+            return None
+        data = res.get("structuredContent") or {}
+        if isinstance(data, dict) and list(data) == ["result"]:
+            data = data["result"]
+        if not data:
+            for c in res.get("content", []):
+                try:
+                    data = json.loads(c.get("text", ""))
+                    break
+                except ValueError:
+                    continue
+        data = data if isinstance(data, dict) else {}
+        self.error = None
+        return data.get("note_id") or data.get("id") or (data.get("note") or {}).get("id")
+
+
+ROUNDTABLE = Roundtable()

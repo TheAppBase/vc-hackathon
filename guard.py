@@ -1,12 +1,11 @@
-"""Safety gate for every write the agent makes. Reads are always allowed.
+"""Safety layer for what the agent writes into the shared firm memory. Reading is always allowed.
 
-The agent's only write is saving an event note to the firm memory, where teammates' agents can read it.
-Two layers:
-1. Hard rules (always on, both modes): length caps and no secrets (API keys, private keys, passwords, card numbers).
-2. In Auto mode, PRISM reviews the proposed write. It is submitted as a step of the user's PRISM session, PRISM
-   evaluates it, and the agent only goes ahead on a clear pass. If PRISM blocks it, it is blocked. If PRISM is
-   unreachable or its answer is unclear, the agent falls back to asking the user (fail closed, never fail open).
-In Ask mode PRISM is not used: every write waits for the user's approval.
+Notes never need the user's approval: they save straight away. Two protections:
+1. Always on: secrets (API keys, private keys, passwords, card numbers) are redacted before a note reaches the firm
+   memory, where teammates' agents can read it.
+2. Auto mode: PRISM watches the agent and reviews every note before it is saved. A clear block stops the save; a pass
+   or no clear answer saves it (the note is the user's own words, so the user is never asked to approve it).
+In Ask mode PRISM is not used at all.
 """
 from __future__ import annotations
 
@@ -21,7 +20,7 @@ SECRET_RES = [
     (re.compile(r"\b(?:sk|pk|rk|pt-sk)[-_][A-Za-z0-9_-]{16,}"), "contains an API key"),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "contains an AWS key"),
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "contains a private key"),
-    (re.compile(r"\bpassword\s*(?:is\s*)?[:=]", re.I), "contains a password"),
+    (re.compile(r"\b(?:password|passcode|pin code|pin)\s*(?:is|:|=)\s*\S+", re.I), "contains a password"),
 ]
 MAX_NOTE = 8000
 PASS = {"pass", "passed", "safe", "approved", "approve", "allow", "allowed", "compliant", "low"}
@@ -34,19 +33,14 @@ def live() -> bool:
     return TRACER.pt is not None
 
 
-def hard_rules(kind: str, payload: dict) -> str | None:
-    """Return a reason to block, or None."""
-    if kind == "save_note":
-        text = payload.get("text") or ""
-        if not text.strip():
-            return "Empty note"
-        if len(text) > MAX_NOTE:
-            return "Note is too long"
-        for rx, why in SECRET_RES:
-            if rx.search(text):
-                return f"Blocked: the note {why}"
-        return None
-    return "Unknown action"
+def redact(text: str) -> tuple[str, list[str]]:
+    """Replace secrets with [redacted] and say what was removed."""
+    found = []
+    for rx, why in SECRET_RES:
+        if rx.search(text):
+            found.append(why.replace("looks like ", "").replace("contains ", ""))
+            text = rx.sub("[redacted]", text)
+    return text, found
 
 
 def _decide(ev) -> tuple[str, str]:
@@ -95,7 +89,7 @@ def review(agent: str, agent_id: str, session_id: str, action: dict, wait_s: flo
     steps = [
         {"step_type": "reasoning", "label": "Proposed write", "status": "success",
          "input_summary": f"{agent} wants to: {action['summary']}",
-         "output_summary": "Waiting for PRISM approval before acting. Reads are allowed; this is a write."},
+         "output_summary": "Waiting for PRISM's review before writing to the shared firm memory. Reads are allowed."},
         {"step_type": "tool_call", "tool_name": action["type"], "label": action["summary"][:120], "status": "success",
          "input_summary": json.dumps(action["payload"], default=str)[:4000]},
     ]

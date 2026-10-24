@@ -48,6 +48,8 @@ INTERVIEW = [
      "chips": ["AI and devtools, pre-seed to seed", "Consumer and CPG, seed", "Fintech, seed to Series A"]},
     {"key": "signal", "q": "What makes you take a first call? Tell me the signal you trust most.",
      "chips": ["Technical founders with open-source traction", "Real revenue and repeat purchase", "A warm intro from someone I trust"]},
+    {"key": "nos", "q": "Last one. Any hard no's I should flag for you?",
+     "chips": ["Token or crypto raises", "Agencies and services businesses", "No hard no's"]},
 ]
 ALL_SECTORS = ["ai", "devtools", "fintech", "consumer", "cpg", "climate", "health"]
 WEIGHTS = {
@@ -189,6 +191,7 @@ def build_profile(a: dict, name: str) -> dict:
     return {
         "name": name, "first": first(name), "role": str(a.get("role") or "Investor")[:80], "focus": focus[:80] or "Generalist",
         "sectors": sectors, "stages": stages, "signal": str(a.get("signal") or "")[:100], "style": style, "weights": w,
+        "nos": str(a.get("nos") or "No hard no's")[:80],
         "weights_text": ", ".join(f"{LABEL[k]} {v}%" for k, v in sorted(w.items(), key=lambda kv: -kv[1]) if v),
     }
 
@@ -238,6 +241,8 @@ def founders_from(notes: list[dict]) -> list[dict]:
         rec["next_step"], rec["next_due"] = x.get("next_step"), x.get("next_due")  # the latest note sets what's next
         rec["last_touch"] = n.get("created_at")
         rec["notes"].append({"id": n.get("id"), "text": n.get("text", ""), "created_at": n.get("created_at")})
+        if n.get("akta"):
+            rec["akta"] = n["akta"]
     for rec in recs:
         rec["id"] = _key(rec.get("founder") or rec.get("company")).replace(" ", "-")
     return recs
@@ -327,80 +332,70 @@ def who_knows(mem: list[dict], names: list[str]) -> list[dict]:
     return hits
 
 
-# --------------------------------------------------------------------------- actions (every write goes through here)
-def view(act: dict) -> dict:
-    return {k: act.get(k) for k in ("id", "type", "summary", "payload", "status", "reason", "review", "result", "mode", "created_at")}
+# --------------------------------------------------------------------------- saving a note (no approval needed)
+def log_action(user: dict, act: dict):
+    """Every write is logged, so Settings can show what the agent did and what PRISM decided."""
+    store.put(f"actions/{user['username']}/{act['id']}.json", act)
 
 
-def run_action(user: dict, act: dict):
-    try:
-        if act["type"] != "save_note":
-            raise ValueError("Unknown action")
-        p = act["payload"]
-        store.put(f"notes/{user['username']}/{act['id']}.json",
-                  {"id": act["id"], "text": p["text"], "source": p["source"], "extracted": p["extracted"], "created_at": act["created_at"]})
-        act["status"], act["result"] = "done", {"text": "Saved to your firm memory. Your teammates' agents can see it."}
-    except Exception as e:
-        act["status"], act["reason"] = "failed", str(e)[:200]
+def note_markdown(user: dict, note: dict) -> str:
+    x = note["extracted"]
+    lines = [f"# {describe_rec(x) if (x.get('founder') or x.get('company')) else 'Note'}", "", note["text"], "",
+             f"Recorded by {user['name']} (@{user['username']}) on {nice_date(note['created_at'])}."]
+    for k, label in (("event", "Met at"), ("next_step", "Next step"), ("next_due", "Due")):
+        if x.get(k):
+            lines.append(f"- {label}: {x[k]}")
+    return "\n".join(lines)
 
 
-@app.post("/api/actions")
+@app.post("/api/notes")
 @login_required
-def api_action_propose(user):
+def api_note_save(user):
     t0 = time.time()
-    body = request.get_json(silent=True) or {}
-    if body.get("type") != "save_note":
-        return jsonify({"error": "Unknown action"}), 400
-    p = body.get("payload") or {}
-    text = str(p.get("text") or "").strip()[:guard.MAX_NOTE + 1]
-    act = {"id": new_id(), "type": "save_note", "mode": mode_of(user), "created_at": now(), "summary": "Save this note to your firm memory"}
-    why = guard.hard_rules("save_note", {"text": text})
-    extracted, reader = (extract(user, text, dt.date.today()) if not why else (engine.clean_note({}), "none"))
-    act["payload"] = {"text": text, "source": "dictation" if p.get("source") == "dictation" else "typed", "extracted": extracted}
-    hits = who_knows(team_memory(user), [extracted.get("founder"), extracted.get("company")]) if not why else []
-    if why:
-        act["status"], act["reason"] = "blocked", why
-    elif act["mode"] == "auto":
+    p = request.get_json(silent=True) or {}
+    raw = str(p.get("text") or "").strip()
+    if not raw:
+        return jsonify({"error": "Empty note"}), 400
+    text, redacted = guard.redact(raw[:guard.MAX_NOTE])
+    extracted, reader = extract(user, text, dt.date.today())
+    mode = mode_of(user)
+    act = {"id": new_id(), "type": "save_note", "mode": mode, "created_at": now(), "summary": "Save a note to the firm memory",
+           "payload": {"text": text, "source": "dictation" if p.get("source") == "dictation" else "typed", "extracted": extracted}}
+    if redacted:
+        act["redacted"] = redacted
+    if mode == "auto":
         name, aid = agent_of(user)
         act["review"] = guard.review(name, aid, session.get("sid") or aid, act)
-        d = act["review"]["decision"]
-        if d == "allow":
-            run_action(user, act)
-        elif d == "block":
-            act["status"], act["reason"] = "blocked", f"PRISM blocked this: {act['review']['reason']}"
-        else:
-            act["status"], act["reason"] = "needs_approval", f"PRISM could not decide ({act['review']['reason']}), so I'm asking you."
+    if act.get("review", {}).get("decision") == "block":
+        act["status"], act["reason"] = "blocked", f"PRISM blocked this note: {act['review']['reason']}"
     else:
-        act["status"] = "needs_approval"
-    store.put(f"actions/{user['username']}/{act['id']}.json", act)
+        note = {"id": act["id"], "text": text, "source": act["payload"]["source"], "extracted": extracted, "created_at": act["created_at"]}
+        if ix.AKTA.live and (extracted.get("company") or extracted.get("one_liner")):
+            t1, ix.AKTA.error = time.time(), None
+            note["akta"] = ix.AKTA.lookup(extracted.get("company"), extracted.get("one_liner"))
+            trace_tool(user, "akta.lookup", f"{extracted.get('company')} | {extracted.get('one_liner')}",
+                       json.dumps(note["akta"])[:500], t1, "error" if ix.AKTA.error and not note["akta"]["match"] else "success")
+        try:
+            store.put(f"notes/{user['username']}/{act['id']}.json", note)
+            act["status"] = "done"
+            act["akta"] = note.get("akta")
+        except Exception as e:
+            act["status"], act["reason"] = "failed", f"Could not save: {str(e)[:160]}"
+        if act["status"] == "done" and ix.ROUNDTABLE.live:
+            act["roundtable"] = bool(ix.ROUNDTABLE.save_note(f"Last Touch · {describe_rec(extracted) if (extracted.get('founder') or extracted.get('company')) else 'Note'}",
+                                                             note_markdown(user, note), f"lt-{user['username']}-{act['id']}"))
+    if act.get("review") and act["review"]["decision"] == "unknown" and act["status"] == "done":
+        act["reason"] = f"Saved. PRISM could not decide ({act['review']['reason']})."
+    log_action(user, act)
+    hits = who_knows(team_memory(user), [extracted.get("founder"), extracted.get("company")]) if act["status"] == "done" else []
     trace_tool(user, "save_note", text[:500], f"{act['status']}; read with {reader}; {len(hits)} teammate matches", t0,
                "error" if act["status"] == "failed" else "success")
     return jsonify({**view(act), "hits": hits, "reader": reader})
 
 
-@app.post("/api/actions/<aid>")
-@login_required
-def api_action_decide(user, aid):
-    if not re.fullmatch(r"[0-9a-f-]{8,40}", aid):
-        return jsonify({"error": "Not found"}), 404
-    path = f"actions/{user['username']}/{aid}.json"
-    act = store.get(path)
-    if not act:
-        return jsonify({"error": "Not found"}), 404
-    if act["status"] != "needs_approval":
-        return jsonify(view(act))
-    if (request.get_json(silent=True) or {}).get("approve"):
-        why = guard.hard_rules(act["type"], act["payload"])
-        if why:
-            act["status"], act["reason"] = "blocked", why
-        else:
-            act["approved_by"] = user["username"]
-            run_action(user, act)
-    else:
-        act["status"] = "denied"
-    act["decided_at"] = now()
-    store.put(path, act)
-    return jsonify(view(act))
+def view(act: dict) -> dict:
+    return {k: act.get(k) for k in ("id", "type", "summary", "payload", "status", "reason", "review", "result", "mode",
+                                    "created_at", "redacted", "akta", "roundtable")}
 
 
 @app.get("/api/actions")
@@ -489,13 +484,45 @@ def api_settings(user):
     return jsonify({"user": public(user)})
 
 
-@app.get("/api/prism")
+@app.get("/api/integrations")
 @login_required
-def api_prism(user):
-    return jsonify({"configured": guard.live(), **ix.TRACER.status()} if guard.live() else {"configured": False})
+def api_integrations(user):
+    out = {"store": "Vercel Blob (private)" if store.LIVE else "local files (no BLOB_READ_WRITE_TOKEN)",
+           "nicrron": ix.LLM_CLIENT.live, "akta": {"live": ix.AKTA.live, "paid": ix.AKTA.use_paid, "error": ix.AKTA.error},
+           "roundtable": {"live": ix.ROUNDTABLE.live, "error": ix.ROUNDTABLE.error}, "prism": {"configured": guard.live()}}
+    if guard.live():
+        out["prism"].update(ix.TRACER.status())
+    return jsonify(out)
 
 
 # --------------------------------------------------------------------------- agent skills (reads, always allowed)
+def hard_no(profile: dict, rec: dict) -> str | None:
+    """The user's hard no's from the interview, checked against what their notes and akta.pro say."""
+    nos = (profile.get("nos") or "").lower()
+    ak = rec.get("akta") or {}
+    text = " ".join([n["text"] for n in rec.get("notes", [])] + [str(rec.get("one_liner") or ""),
+                    str((ak.get("industry") or {}).get("name") or ""), str((ak.get("match") or {}).get("description") or "")]).lower()
+    if ("crypto" in nos or "token" in nos) and re.search(r"\b(token|crypto|web3|blockchain|nft|defi)\b", text):
+        return "Your hard no: token or crypto"
+    if ("agenc" in nos or "service" in nos) and re.search(r"\b(agency|consultancy|services business|dev shop)\b", text):
+        return "Your hard no: agency or services business"
+    return None
+
+
+def akta_line(ak: dict | None) -> str | None:
+    if not ak or not (ak.get("match") or ak.get("industry") or ak.get("similar")):
+        return None
+    bits = []
+    if ak.get("match"):
+        m = ak["match"]
+        bits.append(m["name"] + (f" ({m['website']})" if m.get("website") else "") + (f", {m['status']}" if m.get("status") else ""))
+    if ak.get("industry"):
+        bits.append(f"industry: {ak['industry']['name']}")
+    if ak.get("similar"):
+        bits.append("similar: " + ", ".join(c["name"] for c in ak["similar"][:4]))
+    return "; ".join(bits)
+
+
 @app.get("/api/founders")
 @login_required
 def api_founders(user):
@@ -516,7 +543,7 @@ def api_founders(user):
                "last_touch": r["last_touch"], "when": nice_date(r["last_touch"]), "notes": len(r["notes"]),
                "latest": r["notes"][-1]["text"][:240], "traction": engine.metrics_line(r.get("metrics")),
                "raise": engine.money(r.get("raising_usd")), "background": "; ".join(r.get("background") or []),
-               "known": who_knows(mem, [r.get("founder"), r.get("company")])}
+               "known": who_knows(mem, [r.get("founder"), r.get("company")]), "akta": akta_line(r.get("akta"))}
         if member:
             facts = with_team_facts(r, mem)
             row.update(sector=facts.get("sector"), stage=facts.get("stage"), traction=engine.metrics_line(facts.get("metrics")),
@@ -524,7 +551,8 @@ def api_founders(user):
             row["raise"] = engine.money(facts.get("raising_usd"))
             s = engine.score_member({**facts, "warm_intro": bool(row["known"])}, member)
             top = sorted(((k, v) for k, v in s["parts"].items() if v), key=lambda kv: -kv[1])[:2]
-            row.update(score=s["score"], verdict=("Outside your thesis" if s["features"]["thesis"] == 0 else
+            no = hard_no(profile, r)
+            row.update(score=s["score"], verdict=(no if no else "Outside your thesis" if s["features"]["thesis"] == 0 else
                                                   "Take the next call" if s["score"] >= 65 else
                                                   "Keep warm" if s["score"] >= 45 else "Pass"),
                        why=", ".join(f"{LABEL[k]} {v:g}/{member['weights'][k]}" for k, v in top) or "little to go on")
@@ -533,6 +561,52 @@ def api_founders(user):
     trace_tool(user, "list_founders", f"{len(notes)} notes", f"{len(out)} founders, "
                f"{sum(r['status'] in ('due', 'overdue') for r in out)} need a follow-up", t0)
     return jsonify({"founders": out, "notes": len(notes), "unlinked": len(notes) - sum(r["notes"] for r in out)})
+
+
+@app.get("/api/source")
+@login_required
+def api_source(user):
+    """Find new companies on akta.pro that match the user's focus, and say which ones the team already knows."""
+    t0 = time.time()
+    profile = user.get("profile")
+    if not profile:
+        return jsonify({"error": "interview", "message": "Finish the interview first."}), 409
+    if not ix.AKTA.live:
+        return jsonify({"error": "akta", "message": "akta.pro isn't connected (AKTA_API_KEY on the server)."}), 409
+    query = str(request.args.get("q") or "").strip()[:120] or f"{profile['focus']} startups"
+    ix.AKTA.error = None
+    if ix.AKTA.use_paid:
+        rows = ix.AKTA.companies_like(query, 10)
+    else:
+        rows = ix.AKTA.company_search(query)
+    mine = {k for r in founders_from(notes_of(user["username"])) for k in (_key(r.get("company")), _key(r.get("founder"))) if k}
+    mem = team_memory(user)
+    out = []
+    for c in rows[:12]:
+        name = ix._name(c)
+        out.append({"name": name, "website": c.get("website") or c.get("domain"),
+                    "description": str(c.get("description") or c.get("short_description") or "")[:200] or None,
+                    "mine": _key(name) in mine, "known": who_knows(mem, [name])})
+    trace_tool(user, "akta.source", query, f"{len(out)} companies" + (f"; {ix.AKTA.error}" if ix.AKTA.error and not out else ""), t0,
+               "error" if ix.AKTA.error and not out else "success")
+    return jsonify({"query": query, "companies": out, "paid": ix.AKTA.use_paid, "error": ix.AKTA.error if not out else None})
+
+
+@app.get("/api/lookup")
+@login_required
+def api_lookup(user):
+    """akta.pro lookup for one company, plus what the team already knows about it."""
+    t0 = time.time()
+    q = str(request.args.get("q") or "").strip()[:80]
+    if not q:
+        return jsonify({"error": "Say which company to look up."}), 400
+    if not ix.AKTA.live:
+        return jsonify({"error": "akta", "message": "akta.pro isn't connected (AKTA_API_KEY on the server)."}), 409
+    ix.AKTA.error = None
+    ak = ix.AKTA.lookup(q, None)
+    trace_tool(user, "akta.lookup", q, json.dumps(ak)[:500], t0)
+    return jsonify({"query": q, "akta": ak, "line": akta_line(ak), "known": who_knows(team_memory(user), [q]),
+                    "error": ix.AKTA.error if not ak.get("match") else None})
 
 
 @app.get("/api/notes")
@@ -622,13 +696,14 @@ ICONS = {
     "stop": '<rect x="6" y="6" width="12" height="12" rx="2"/>',
     "copy": '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
     "check": '<path d="M20 6 9 17l-5-5"/>',
+    "globe": '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
 }
 PAGE = (Path(__file__).parent / "page.html").read_text()
 
 
 @app.get("/")
 def index():
-    data = {"icons": ICONS, "interview": INTERVIEW, "prism": guard.live(), "llm": ix.LLM_CLIENT.live,
+    data = {"icons": ICONS, "interview": INTERVIEW, "prism": guard.live(), "llm": ix.LLM_CLIENT.live, "akta": ix.AKTA.live,
             "store": "Vercel Blob" if store.LIVE else "local files"}
     blob = json.dumps(data).replace("</", "<\\/")
     return PAGE.replace("__DATA__", blob)

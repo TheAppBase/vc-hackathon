@@ -103,7 +103,7 @@ max-height:168px;line-height:1.45}
 .action{max-width:600px;border-radius:16px;padding:12px 14px;background:var(--glass-strong);border:1px solid var(--edge);animation:in .25s ease-out}
 .action .th{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted);flex-wrap:wrap}.action .th .ic{color:var(--orange)}
 .action .th b{color:var(--text);font-size:13px}.action .st{margin-left:auto;font-weight:600}
-.action.needs_approval{border-color:rgba(255,149,0,.55)}.action.done .th .ic,.action.done .st{color:var(--green)}
+.action.done .th .ic,.action.done .st{color:var(--green)}
 .action.blocked,.action.failed{border-color:rgba(255,59,48,.5)}.action.blocked .st,.action.failed .st,.action.blocked .th .ic{color:var(--red)}
 .action.denied .st{color:var(--gray)}.action .body{font-size:13.5px;margin:8px 0 2px;white-space:pre-wrap;max-height:220px;overflow:auto}
 .action .why{margin-top:4px}
@@ -248,35 +248,34 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   input.addEventListener('input', () => { grow(); if (listening) { baseText = input.value.replace(/\s*$/, ' '); finalText = ''; } });
   input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $('#composer').requestSubmit(); } });
 
-  // ---------------------------------------------------------------- saving a note (the only write): Ask mode asks, Auto mode asks PRISM
-  const ST = {needs_approval: 'Needs your OK', done: 'Saved', blocked: 'Blocked', denied: 'Not saved', failed: 'Failed'};
-  function actionHTML(a) {
+  // ---------------------------------------------------------------- saving a note: straight away (Auto mode: PRISM reviews it first)
+  const ST = {done: 'Saved', blocked: 'Blocked by PRISM', failed: 'Not saved'};
+  function noteHTML(a) {
     const x = (a.payload || {}).extracted || {};
     const rows = [['Founder', x.founder], ['Company', x.company], ['Met at', x.event], ['Next step', x.next_step && (x.next_step + (x.next_due ? ` (by ${x.next_due})` : ''))],
-      ['Stage', [x.sector, x.stage].filter(Boolean).join(' · ')]].filter(([, v]) => v);
-    const xt = rows.length ? `<dl class="xt">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : '<div class="why">I could not find a founder or company in this note. It is still saved as a note.</div>';
-    const rv = a.review ? `<div class="why">PRISM review: ${esc(a.review.decision)}${a.review.reason ? ` (${esc(a.review.reason)})` : ''}</div>` : '';
-    const reason = a.reason ? `<div class="why">${esc(a.reason)}</div>` : '';
-    const done = a.result && a.result.text ? `<div class="why">${esc(a.result.text)}</div>` : '';
-    const btns = a.status === 'needs_approval' ? `<div class="acts"><button class="btn primary" data-approve="${esc(a.id)}">${ic('check', 13)}Save</button><button class="btn" data-deny="${esc(a.id)}">Don't save</button></div>` : '';
-    return `<div class="action ${esc(a.status)}" data-aid="${esc(a.id)}"><div class="th">${ic('shield', 14)}<b>${esc(a.summary)}</b>
-      <span class="st">${esc(ST[a.status] || a.status)}</span></div><div class="small">${a.mode === 'auto' ? 'Auto mode · checked by PRISM' : 'Ask mode · waiting for you'}</div>
-      <div class="body">${esc((a.payload || {}).text || '')}</div>${a.status === 'blocked' && !rows.length ? '' : xt}${rv}${reason}${done}${btns}</div>`;
+      ['Sector', [x.sector, x.stage].filter(Boolean).join(' · ')], ['akta.pro', a.akta_line]].filter(([, v]) => v);
+    const xt = rows.length ? `<dl class="xt">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : '<div class="why">No founder or company named, so I saved it as a general note.</div>';
+    const extra = [a.redacted && a.redacted.length ? `Removed before saving: ${a.redacted.join(', ')}.` : '',
+      a.review ? `PRISM review: ${a.review.decision}${a.review.reason ? ` (${a.review.reason})` : ''}.` : '',
+      a.reason || '', a.roundtable ? 'Copied to Roundtable.' : ''].filter(Boolean).map((t) => `<div class="why">${esc(t)}</div>`).join('');
+    return `<div class="action ${esc(a.status)}" data-aid="${esc(a.id)}"><div class="th">${ic(a.status === 'done' ? 'check' : 'shield', 14)}<b>${a.status === 'done' ? 'Note saved to your firm memory' : 'Note not saved'}</b>
+      <span class="st">${esc(ST[a.status] || a.status)}</span></div><div class="small">${a.mode === 'auto' ? 'Auto mode · reviewed by PRISM' : 'Ask mode · PRISM off'}</div>
+      <div class="body">${esc((a.payload || {}).text || '')}</div>${a.status === 'done' ? xt : ''}${extra}</div>`;
   }
-  chat.addEventListener('click', async (ev) => {
-    const ok = ev.target.closest('[data-approve]'), no = ev.target.closest('[data-deny]');
-    if (!ok && !no) return;
-    const id = (ok || no).dataset.approve || (ok || no).dataset.deny;
-    const card = chat.querySelector(`[data-aid="${CSS.escape(id)}"]`);
-    card.querySelectorAll('button').forEach((b) => { b.disabled = true; });
-    try { const a = await api(`/api/actions/${id}`, {approve: !!ok}); card.outerHTML = actionHTML(a); }
-    catch (e) { card.querySelectorAll('button').forEach((b) => { b.disabled = false; }); if (!(e instanceof NeedsSignin)) say(esc(e.message)); }
-  });
-  async function note(text, source) {
-    const a = await tool('read_note() → save_note()', () => api('/api/actions', {type: 'save_note', payload: {text, source}}), {kind: 'db', write: true,
-      result: (a) => `read with ${a.reader} · ${a.hits.length ? `${a.hits.length} teammate match${a.hits.length > 1 ? 'es' : ''}` : 'no teammate has met them yet'} · ${(ST[a.status] || a.status).toLowerCase()}`});
-    block(actionHTML(a));
+  async function note(text, via) {
+    const a = await tool('save_note()', () => api('/api/notes', {text, source: via}), {kind: 'db', write: true,
+      result: (a) => `read with ${a.reader}${a.akta ? ' · checked on akta.pro' : ''} · ${a.hits.length ? `${a.hits.length} teammate match${a.hits.length > 1 ? 'es' : ''}` : 'no teammate has met them yet'} · ${(ST[a.status] || a.status).toLowerCase()}`});
+    a.akta_line = aktaLine(a.akta);
+    block(noteHTML(a));
     for (const h of a.hits) say(esc(h.text), {id: h.username, name: h.who});
+  }
+  function aktaLine(ak) {
+    if (!ak || !(ak.match || ak.industry || (ak.similar || []).length)) return '';
+    const bits = [];
+    if (ak.match) bits.push(ak.match.name + (ak.match.website ? ` (${ak.match.website})` : '') + (ak.match.status ? `, ${ak.match.status}` : ''));
+    if (ak.industry) bits.push(`industry: ${ak.industry.name}`);
+    if ((ak.similar || []).length) bits.push('similar: ' + ak.similar.slice(0, 4).map((c) => c.name).join(', '));
+    return bits.join('; ');
   }
 
   // ---------------------------------------------------------------- interview
@@ -304,7 +303,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     ME = r.user; step = -1;
     profileCard();
     await typing(300);
-    say(`I'm ready, ${esc(ME.first)}. After every event or meeting, tap the mic and tell me who you met, what they're building and what's next. I'll keep track, rank founders with your criteria, and check with your teammates' agents so nobody drops a founder.`);
+    say(`I'm ready, ${esc(ME.first)}. After every event or meeting, tap the mic and tell me who you met, what they're building and what's next. I'll keep track, check the company on akta.pro, rank founders with your criteria, and check with your teammates' agents so nobody drops a founder.`);
     mainChips();
   }
   function profileCard() {
@@ -314,13 +313,15 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     block(`<div class="card profile"><div class="head">${agentAvatar()}<div><b>${esc(ME.first)}'s agent</b><span class="small">@${esc(ME.username)} · built from your interview</span></div></div>
       <dl class="kv"><dt>Role</dt><dd>${esc(p.role)}</dd><dt>Focus</dt><dd>${esc(p.sectors.join(', '))} · ${esc(p.stages.join(', '))}</dd>
       <dt>Trusts</dt><dd>${esc(p.signal || 'A balanced read')}</dd>
-      <dt>Saving notes</dt><dd>${ME.mode === 'auto' ? 'Auto: PRISM approves or blocks' : 'Asks you first'}</dd></dl><div class="bars">${bars}</div></div>`);
+      <dt>Hard no's</dt><dd>${esc(p.nos || "No hard no's")}</dd>
+      <dt>Safety</dt><dd>${ME.mode === 'auto' ? 'Auto: PRISM watches and reviews notes' : 'Ask: PRISM off'}</dd></dl><div class="bars">${bars}</div></div>`);
   }
   function mainChips() {
     setChips([
       {label: 'Record a note', icon: 'mic', act: () => (listening ? stopDictation() : startDictation())},
       {label: 'Who have I been talking to?', icon: 'list', act: () => run(() => ask('Who have I been talking to?'))},
       {label: 'Rank my founders', icon: 'spark', act: () => run(() => ask('Rank my founders'))},
+      {label: 'Source founders', icon: 'globe', act: () => run(() => ask('Source founders'))},
       {label: 'What is my team working on?', icon: 'agent', act: () => run(() => ask('What is my team working on?'))},
     ]);
     chipsEl.querySelector('.chip').dataset.free = '1';
@@ -328,18 +329,24 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
 
   // ---------------------------------------------------------------- skills (reads)
   let FOUNDERS = [];
-  async function ask(text, source) {
+  async function ask(text, via) {
     mine(text);
     const q = text.toLowerCase().trim();
+    // Requests are short or end in "?"; anything longer is a note, even if it mentions "follow up" or "overdue".
+    const isAsk = /\?$/.test(q) || q.split(/\s+/).length <= 9;
     let m;
-    if ((m = text.trim().match(/^(?:ask (?:the |my )?team (?:about )?|who (?:else )?knows |has anyone (?:else )?met )(.+?)\??$/i))) return askTeam(m[1]);
-    if (/^(rank|score|source)\b|my founders|best founders|who should i (meet|back|call)/.test(q)) return rank();
-    if (/who (have|am) i (been )?talk|who did i meet|my conversations|what('s| is) next|follow[- ]?ups?\??$|what do i owe|overdue/.test(q)) return contacts();
-    if (/what is my team|team working|what's my team|my team doing/.test(q)) return team();
-    if (/^(help|what can you do)\??$/.test(q)) {
-      return say('Record a note after any event or meeting and I\'ll read out the founder, company, where you met and your next step. Then ask "who have I been talking to?", "rank my founders", "what is my team working on?" or "who knows Patchbay?". Anything that isn\'t a question, I save as a note.');
+    if (isAsk) {
+      if ((m = text.trim().match(/^(?:ask (?:the |my )?team (?:about )?|who (?:else )?knows |has anyone (?:else )?met )(.+?)\??$/i))) return askTeam(m[1]);
+      if ((m = text.trim().match(/^(?:look ?up|search(?: akta(?:\.pro)?(?: for)?)?) (.+?)(?: on akta(?:\.pro)?)?\??$/i))) return lookup(m[1]);
+      if (/^(rank|score)\b|^(show )?my founders\??$|best founders|^who should i (meet|back|call)/.test(q)) return rank();
+      if (/^(source|find)( new)? (founders|startups|companies)\b|^source\??$/.test(q)) return source(/^(?:source|find)\s+(?:founders|startups|companies)?\s*(?:in|for|doing)\s+(.+?)\??$/i.exec(text.trim()));
+      if (/who (have|am) i (been )?talk|who did i meet|my conversations|^what('s| is) next|^(my |show )?follow[- ]?ups?\??$|what do i owe|what('s| is) overdue/.test(q)) return contacts();
+      if (/what is my team|team working|what's my team|my team doing/.test(q)) return team();
+      if (/^(help|what can you do)\??$/.test(q)) {
+        return say('Record a note after any event or meeting and I\'ll read out the founder, company, where you met and your next step, and check the company on akta.pro. Then ask "who have I been talking to?", "rank my founders", "source founders", "look up Patchbay", "what is my team working on?" or "who knows Patchbay?". Anything that isn\'t a question, I save as a note.');
+      }
     }
-    return note(text, source);
+    return note(text, via);
   }
   async function loadFounders() {
     const r = await tool('list_founders(my notes)', () => api('/api/founders'), {kind: 'db',
@@ -368,17 +375,18 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   async function rank() {
     const r = await loadFounders();
     if (!r.founders.length) { say('No founders in your notes yet. Record a note after your next event and I\'ll rank them with your criteria.'); return; }
-    const ranked = r.founders.slice().sort((a, b) => (a.verdict === 'Outside your thesis') - (b.verdict === 'Outside your thesis') || b.score - a.score);
+    const low = (f) => (f.verdict === 'Outside your thesis' || /^Your hard no/.test(f.verdict) ? 1 : 0);
+    const ranked = r.founders.slice().sort((a, b) => low(a) - low(b) || b.score - a.score);
     const show = ranked.slice(0, 6);
     say(`Ranked by your own criteria (${esc(ME.profile.weights_text)}).${ranked.length > show.length ? ` ${ranked.length - show.length} more below.` : ''} Scores only use what your notes say, so the more you note (traction, raise, background), the better I rank.`);
     block(`<div class="cards">${show.map(leadCard).join('')}</div>`);
   }
   function leadCard(f) {
-    const v = f.verdict === 'Take the next call' ? 'v-take' : f.verdict === 'Keep warm' ? 'v-warm' : '';
+    const v = f.verdict === 'Take the next call' ? 'v-take' : f.verdict === 'Keep warm' ? 'v-warm' : /^Your hard no/.test(f.verdict) ? 's-overdue' : '';
     return `<div class="card lead"><div class="top"><div><h4>${esc(f.company || f.founder)}</h4><small>${esc(f.founder && f.company ? f.founder : '')}${f.event ? `${f.founder && f.company ? ' · ' : ''}met at ${esc(f.event)}` : ''}</small></div>
       <div class="ring" style="--p:${f.score}" title="Score on your criteria">${f.score}</div></div><p>${esc(f.one_liner || f.latest)}</p>
       <div class="meta"><span class="pill ${v}">${esc(f.verdict)}</span><span class="pill">${esc(f.sector || 'sector not noted')} · ${esc(f.stage || 'stage not noted')}</span>${f.known.length ? `<span class="pill s-scheduled">Known to ${esc(f.known[0].who)}</span>` : ''}</div>
-      <div class="why">Why: ${esc(f.why)}${f.traction !== 'Not stated' ? ` · ${esc(f.traction)}` : ''}${f.raise ? ` · raising ${esc(f.raise)}` : ''}${f.filled_from && f.filled_from.length ? ` · filled in from ${esc(f.filled_from.join(' and '))}'s notes` : ''}</div>
+      ${f.akta ? `<div class="why">akta.pro: ${esc(f.akta)}</div>` : ''}<div class="why">Why: ${esc(f.why)}${f.traction !== 'Not stated' ? ` · ${esc(f.traction)}` : ''}${f.raise ? ` · raising ${esc(f.raise)}` : ''}${f.filled_from && f.filled_from.length ? ` · filled in from ${esc(f.filled_from.join(' and '))}'s notes` : ''}</div>
       <div class="acts"><button class="btn primary" data-draft="${esc(f.id)}">${ic('copy', 13)}Draft follow-up</button><button class="btn" data-team="${esc(f.id)}">${ic('agent', 13)}Ask the team</button></div></div>`;
   }
   chat.addEventListener('click', (ev) => {
@@ -393,6 +401,22 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     const where = f.event ? ` at ${f.event}` : '';
     const text = `Hi ${who},\n\nGreat to meet you${where}. I'd love to keep the conversation going about ${f.company || 'what you\'re building'}. Do you have 20 minutes next week?\n\nBest,\n${ME.first}`;
     say(`Here is a follow-up for ${esc(f.founder || f.company)}. Copy it into your email or messages; I don't send anything.<div class="draft">${esc(text)}</div><div class="acts"><button class="btn" data-copy>${ic('copy', 13)}Copy</button></div>`);
+  }
+  async function source(m) {
+    const q = m && m[1] ? m[1] : '';
+    const r = await tool(`akta.pro find_companies("${q || ME.profile.focus}")`, () => api('/api/source' + (q ? '?q=' + encodeURIComponent(q) : '')), {kind: 'globe',
+      result: (r) => `${r.companies.length} companies${r.error ? ` · ${r.error}` : ''}`});
+    if (!r.companies.length) { say(`akta.pro returned no companies for "${esc(r.query)}".${r.error ? ` (${esc(r.error)})` : ''}`); return; }
+    say(`Companies on akta.pro that fit "${esc(r.query)}". ${r.paid ? '' : 'Pro lists are off (AKTA_USE_PAID=0), so these are plain search results. '}Met one of them? Record a note and I\'ll track it.`);
+    block(`<div class="card rows">${r.companies.map((c) => `<div class="row"><span class="src">${ic('globe', 16)}</span>
+      <div><b>${esc(c.name)}</b>${c.website ? ` · ${esc(c.website)}` : ''}${c.description ? `<small>${esc(c.description)}</small>` : ''}</div>
+      <div class="right">${c.mine ? '<span class="pill s-scheduled">In your notes</span>' : c.known.length ? `<span class="pill s-scheduled">Known to ${esc(c.known[0].who)}</span>` : '<span class="pill">New</span>'}</div></div>`).join('')}</div>`);
+  }
+  async function lookup(q) {
+    const r = await tool(`akta.pro lookup("${q}")`, () => api('/api/lookup?q=' + encodeURIComponent(q)), {kind: 'globe',
+      result: (r) => (r.line ? 'found' : 'no match') + (r.known.length ? ` · known to ${r.known.map((h) => h.who).join(', ')}` : '')});
+    say(r.line ? `<b>${esc(q)}</b> on akta.pro: ${esc(r.line)}${r.akta.match && r.akta.match.description ? `<br>${esc(r.akta.match.description)}` : ''}` : `akta.pro has no record of ${esc(q)} (normal for very early companies).${r.error ? ` (${esc(r.error)})` : ''}`);
+    for (const h of r.known) say(esc(h.text), {id: h.username, name: h.who});
   }
   async function askTeam(q) {
     if (!ME.team.length) { say('You have no teammates yet. Add people by username in Settings.'); return; }
@@ -416,21 +440,22 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   // ---------------------------------------------------------------- settings
   async function renderSettings() {
     const dlg = $('#settings'), p = ME.profile;
-    let teamRows = '<li class="small">Loading…</li>', log = '', prism = '';
+    let teamRows = '<li class="small">Loading…</li>', log = '', integ = '';
     const draw = () => {
       dlg.innerHTML = `<div class="sheet-head"><h2>Settings</h2><button class="round mic" id="close-settings" aria-label="Close">${ic('x', 16)}</button></div>
       <h3>Account</h3><ul class="list"><li>${agentAvatar({id: ME.username, name: ME.name})}<span><b>${esc(ME.name)}</b><small>@${esc(ME.username)}</small></span><button class="rm end" id="signout">Sign out</button></li></ul>
       <h3>Your agent</h3>${p ? `<ul class="list"><li>${agentAvatar()}<span><b>${esc(ME.first)}'s agent</b><small>${esc(p.sectors.join(', '))} · ${esc(p.stages.join(', '))}</small></span></li></ul>
         <button class="btn" id="redo">Redo the interview</button>` : '<p class="small">Finish the interview in the chat to build your agent.</p>'}
-      <h3>When the agent saves a note</h3><div class="seg">
-        <label class="${ME.mode === 'ask' ? 'on' : ''}"><input type="radio" name="mode" value="ask" ${ME.mode === 'ask' ? 'checked' : ''}><span><b>Ask for permission</b><small>Every note waits for your OK before it goes into firm memory. PRISM is not used.</small></span></label>
-        <label class="${ME.mode === 'auto' ? 'on' : ''} ${D.prism ? '' : 'off'}"><input type="radio" name="mode" value="auto" ${ME.mode === 'auto' ? 'checked' : ''} ${D.prism ? '' : 'disabled'}><span><b>Auto, guarded by PRISM</b><small>${D.prism ? 'PRISM watches the agent, reviews each note and allows or blocks it. If PRISM is unsure, I ask you.' : 'Needs PRISMTRACE_API_KEY on the server.'}</small></span></label>
-      </div><p class="hint">Reading is always allowed. In both modes I never save secrets (keys, passwords, card numbers).</p>${prism}
+      <h3>Safety</h3><div class="seg">
+        <label class="${ME.mode === 'ask' ? 'on' : ''}"><input type="radio" name="mode" value="ask" ${ME.mode === 'ask' ? 'checked' : ''}><span><b>Ask mode (PRISM off)</b><small>Nothing is sent to PRISM. Your notes save straight away.</small></span></label>
+        <label class="${ME.mode === 'auto' ? 'on' : ''} ${D.prism ? '' : 'off'}"><input type="radio" name="mode" value="auto" ${ME.mode === 'auto' ? 'checked' : ''} ${D.prism ? '' : 'disabled'}><span><b>Auto mode (PRISM on)</b><small>${D.prism ? 'PRISM watches everything the agent does and reviews each note before it is saved. It can block an unsafe note; you never have to approve one.' : 'Needs PRISMTRACE_API_KEY on the server.'}</small></span></label>
+      </div><p class="hint">Reading is always allowed. In both modes, secrets (keys, passwords, card numbers) are removed from notes before they reach the firm memory.</p>
+      <h3>Connected</h3><ul class="list">${integ || '<li class="small">Checking…</li>'}</ul>
       <h3>Team</h3><ul class="list" id="team-list">${teamRows}</ul>
       <h3>Add a person</h3><form class="add" id="add-person"><input id="username" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Their username" aria-label="Username"><button class="btn primary" id="add-btn">${ic('userplus', 14)}Add</button></form>
       <p class="hint" id="add-hint">Type their username. Their agent shares with yours once they add you back.</p>
       <h3>Recent agent actions</h3><ul class="list log">${log || '<li class="small">None yet.</li>'}</ul>
-      <p class="hint">Firm memory: ${esc(D.store)}. Notes are read with ${D.llm ? 'Nicrron' : 'keyword rules'}.</p>`;
+      `;
       wire();
     };
     const removeMate = async (u) => { ME = (await api('/api/team/' + encodeURIComponent(u), undefined, 'DELETE')).user; sys(`@${u} was removed from your team`); loadTeam(); };
@@ -439,7 +464,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
       $('#signout').onclick = async () => { await api('/api/signout', {}); location.href = '/'; };
       const redo = $('#redo'); if (redo) redo.onclick = () => { dlg.close(); run(startInterview); };
       dlg.querySelectorAll('input[name=mode]').forEach((r) => { r.onchange = async () => {
-        try { ME = (await api('/api/settings', {mode: r.value})).user; sys(ME.mode === 'auto' ? 'Auto mode: PRISM watches the agent and reviews every note.' : 'Ask mode: I ask before saving every note.'); }
+        try { ME = (await api('/api/settings', {mode: r.value})).user; sys(ME.mode === 'auto' ? 'Auto mode: PRISM watches the agent and reviews every note.' : 'Ask mode: PRISM is off.'); }
         catch (e) { if (!(e instanceof NeedsSignin)) sys(e.message); }
         draw();
       }; });
@@ -477,9 +502,17 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     };
     draw();
     try {
-      const [, acts, pr] = await Promise.all([loadTeam(), api('/api/actions'), D.prism ? api('/api/prism') : Promise.resolve(null)]);
-      log = acts.actions.map((a) => `<li><span>${esc(((a.payload || {}).text || a.summary).slice(0, 80))}<small>${esc((a.created_at || '').slice(0, 16).replace('T', ' '))} · ${a.mode === 'auto' ? 'auto (PRISM)' : 'ask'}${a.reason ? ' · ' + esc(a.reason) : ''}</small></span><span class="pill s-${a.status === 'done' ? 'scheduled' : a.status === 'blocked' || a.status === 'failed' ? 'overdue' : a.status === 'needs_approval' ? 'due' : 'pass'}">${esc(ST[a.status] || a.status)}</span></li>`).join('');
-      if (pr) prism = `<p class="hint ${pr.credential === 'ok' ? 'ok' : 'err'}">PRISM: ${pr.credential === 'ok' ? 'credential OK' : `credential ${esc(pr.credential)}${pr.detail ? ` (${esc(pr.detail)})` : ''}`}${pr.credential === 'ok' ? (pr.live ? ', live traces arriving' : `, waiting for live traces${pr.blocked_step ? ` (${esc(pr.blocked_step)})` : ''}`) : ''}.</p>`;
+      const [, acts, it] = await Promise.all([loadTeam(), api('/api/actions'), api('/api/integrations')]);
+      log = acts.actions.map((a) => `<li><span>${esc(((a.payload || {}).text || a.summary).slice(0, 80))}<small>${esc((a.created_at || '').slice(0, 16).replace('T', ' '))} · ${a.mode === 'auto' ? 'auto (PRISM)' : 'ask'}${a.reason ? ' · ' + esc(a.reason) : ''}</small></span><span class="pill s-${a.status === 'done' ? 'scheduled' : 'overdue'}">${esc(ST[a.status] || a.status)}</span></li>`).join('');
+      const pr = it.prism || {};
+      const row = (name, ok, text) => `<li><span class="src" style="color:${ok ? 'var(--green)' : 'var(--gray)'}">${ic(ok ? 'check' : 'x', 14)}</span><span>${esc(name)}<small>${esc(text)}</small></span></li>`;
+      integ = [
+        row('Firm memory', /Blob/.test(it.store), it.store),
+        row('akta.pro', it.akta.live, it.akta.live ? `Connected${it.akta.paid ? ', Pro lists on' : ', free search only'}${it.akta.error ? ` · last error: ${it.akta.error}` : ''}` : 'Not connected (AKTA_API_KEY)'),
+        row('PRISM', pr.credential === 'ok', !pr.configured ? 'Not connected (PRISMTRACE_API_KEY)' : pr.credential === 'ok' ? `Credential OK${pr.live ? ', live traces arriving' : `, waiting for live traces${pr.blocked_step ? ` (${pr.blocked_step})` : ''}`}` : `Credential ${pr.credential}${pr.detail ? `: ${pr.detail}` : ''}`),
+        row('Nicrron', it.nicrron, it.nicrron ? 'Reads your notes' : 'Off: notes are read with keyword rules (NICRRON_API_KEY)'),
+        row('Roundtable', it.roundtable.live, it.roundtable.live ? `Notes are copied to Roundtable${it.roundtable.error ? ` · last error: ${it.roundtable.error}` : ''}` : 'Not connected (ROUNDTABLE_MCP_URL and ROUNDTABLE_MCP_TOKEN)'),
+      ].join('');
       const keep = $('#username') ? $('#username').value : '';
       draw(); if (keep) $('#username').value = keep;
     } catch (e) { /* settings still usable */ }
