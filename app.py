@@ -568,11 +568,12 @@ background:radial-gradient(closest-side,var(--solid) 84%,transparent 86%),conic-
     await tool('transcribe(voice_note)', `${words.length} words`);
     await tool('extract(founder, company, next_step)', `${x.founder} · ${x.company} · ${x.next}`);
     await tool(`save_note("${x.company}")`, 'saved to Roundtable firm memory, folder last-touch', {kind: 'mem'});
-    await tool(`check_relationship("${x.founder}")`, 'reply received', {kind: 'agent', target: 'Cara’s agent'});
+    const t = vn.team;
+    await tool(`check_relationship("${x.founder}")`, 'reply received', {kind: 'agent', target: `${t.name}'s agent`});
     await typing(450);
-    say('Cara met Jonah at the hackathon too and owns the relationship. She would like the intro and is free Monday at 10:00 or 2:00. I will send Jonah the invite once you approve.', {id: 'cara', name: 'Cara'});
-    await tool('schedule_followup("Jonah Weiss", Monday 9:00)', 'reminder set, you are co-owner with Cara', {kind: 'mem'});
-    say(`Saved. ${x.facts.map(esc).join(' · ')}.<br>Next steps: Cara takes the call Monday, you follow up by Monday 9:00. Nothing was sent without you.`);
+    say(esc(t.reply), {id: t.id, name: t.name});
+    await tool(`schedule_followup("${x.founder}", ${t.when})`, t.result, {kind: 'mem'});
+    say(`Saved. ${x.facts.map(esc).join(' · ')}.<br>Next steps: ${esc(t.next)} Nothing was sent without you.`);
   }
 
   // ---------------------------------------------------------------- settings
