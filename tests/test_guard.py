@@ -6,12 +6,14 @@ keep = ["Pinecone and Pinterest", "pin down the date", "password reset flow is b
         "raising 1,200,000 at 12000000 post", "the password is the same as before", "order 0123456789012345 shipped",
         "the password is weak.", "PIN is required.", "they ditch password 2FA flows",
         "Let's pin 10:30am Friday for the partner call.", "Pin v2.1.0 of the SDK", "Mastodon https://mastodon.social:443/@ana is her handle",
-        "The password is wrong!!! She will resend the link tomorrow."]
+        "The password is wrong!!! She will resend the link tomorrow.",
+        "Password for the dataroom is in the email.", "The pin for the partner meeting is 10:30am"]
 gone = ["wifi password: hunter2!", "pin is 4455", "pw = x9!k", "card 4111 1111 1111 1111", "token ghp_abcdefghijklmnopqrstuvwxyz123456",
         "Bearer abcdefghijklmnopqrstuvwxyz", "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----",
         "password hunter22 for the dataroom", "postgres://admin:S3cret@db.example.com/app", "ASIAABCDEFGHIJKLMNOP",
         "Dataroom pw: Tr!cky for the dataroom, she said.", "rediss://:S3cretPass99@cache.beta.io:6380",
-        "The wifi password is: Guest2024", "Her PIN is: 4455"]
+        "The wifi password is: Guest2024", "Her PIN is: 4455",
+        "The password for the dataroom is Quill2026", "Password for the data room: Patchbay#77", "The password for Maya's deck: Quill2026"]
 for t in keep:
     if guard.redact(t)[0] != t: fails.append(f"over-redacted: {t!r} -> {guard.redact(t)[0]!r}")
 for t in gone:

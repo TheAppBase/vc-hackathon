@@ -125,9 +125,11 @@ DONE = re.compile(r"\b(sent|done|followed up|introduced|booked|scheduled|wrapped
 MY_DONE = re.compile(r"^(?:i(?:'ve| have)?\s+|we(?:'ve| have)?\s+|just\s+|already\s+)?(?:sent|followed up|introduced|booked|"
                      r"scheduled|finished|completed|intro'd|emailed|pinged)\b|^done\b|^(?:that's|it's|that is|it is|all)\s+done\b|"
                      r"(?:^|[,;:]\s*)(?:all\s+)?done[.!]?$|(?:^|[,;:]\s*)(?:(?:also|and|so|btw|fyi|update)[,:]?\s+)?(?:the |my |our )?"
-                     r"(?:intro(?:duction)?|follow[- ]?up|memo|email|term sheet|call)(?:\s+(?:to|with|for)(?:\s+[\w'’]+){1,3})?"
-                     r"\s+(?:is|was)\s+(?:now\s+|all\s+)?done(?:\s+(?:now|already|too))?(?=\s*(?:[.!,;:]|$|\b(?:and|so|but)\b))", re.I)
-ACTION = re.compile(r"\b(send|intro|introduce|schedule|set up|loop in|book|get (?:him|her|them)|reach out|ping|email)\b", re.I)
+                     r"(?:(?:ic|investment|partner|reference|diligence|intro|follow[- ]?up|thank[- ]you)\s+)?"
+                     r"(?:intro(?:duction)?|follow[- ]?up|memo|email|term sheet|call)(?:\s+(?:email|call|memo))?(?:\s+(?:to|with|for)(?:\s+[\w'’]+){1,3})?"
+                     r"\s+(?:is|was)\s+(?:now\s+|all\s+)?done(?:\s+(?:now|already|too|today|yesterday|this (?:morning|afternoon|week)|last (?:night|week)))?"
+                     r"(?=\s*(?:[.!,;:]|$|\b(?:and|so|but)\b))", re.I)
+ACTION = re.compile(r"\b(send|intro(?!['’]d)|introduce|schedule|set up|loop in|book|get (?:him|her|them)|reach out|ping|email)\b", re.I)
 
 
 def _num(s: str, unit: str | None = None) -> float:
@@ -264,7 +266,9 @@ def _event_in(text: str, low: str) -> str | None:
         past = [p for p in PAST.finditer(text, start, m.start())]
         # "Met Maya at the summit on Saturday" (when they met), not "met Raj, see him at the dinner on Thursday"
         later = past and re.search(r"'ll\b|\b(?:will|going to|gonna)\s+(?:\w+\s+)?(?:see|meet|catch|be)\b|\b(?:we're|we are|i'm|i am)\s+(?:seeing|meeting)\b|"
-                                   r"\b(?:see|seeing|meet|meeting|catch|catching)\s+(?:him|her|them|you|up|again)\b", text[past[-1].end():m.start()], re.I)
+                                   r"\b(?:see|seeing|meet|meeting|catch|catching)\s+(?:him|her|them|you|up|again)\b|\blet['’]?s\b|"
+                                   r"(?:[,;]|\band\b)\s*(?:he|she|they|we|i)\b|\b(?:can|could|should|might|may|would|agreed to|plan(?:ning)? to|hope to)\b",
+                                   text[past[-1].end():m.start()], re.I)
         tail = SOON if past and not later else NOT_PAST
         e = re.match(rf"((?:[A-Z0-9][\w'&-]*\s){{0,4}}{mod}(?i:{EVENT_CORE})|(?:[A-Z0-9][\w'&-]*\s){{1,4}}(?i:week|fair)|"
                      rf"(?i:career|job|trade|science|startup) fair)\b{tail}", text[m.end():])
@@ -322,7 +326,7 @@ def heuristic_note(text: str, today: dt.date) -> dict:
                 r"at \d{1,2}(?::\d\d)?(?: ?[ap]\.?m\.?)?|\d{1,2}(?::\d\d)? ?[ap]\.?m\.?)){0,2}[.!]?$", sents[at + 1], re.I):
             ext["next_due"] = due_from(sents[at + 1], today)
     if not ext["next_step"]:
-        ext["step_done"] = any(MY_DONE.search(x.strip()) for x in SENTENCE_END.split(text) if x and x.strip())
+        ext["step_done"] = any(MY_DONE.search(x.strip().replace("’", "'")) for x in SENTENCE_END.split(text) if x and x.strip())
     return ext
 
 
@@ -344,14 +348,20 @@ def is_question(t: str) -> bool:
     """A short message without "?" that reads as a question. Commas, colons and semicolons mark shorthand notes
     ("Did coffee with Raj, wants intro to Cara", "What Jonah said: raising in Q1")."""
     q = t.lower()
-    if re.search(r"[,:;]", t):
-        return False
+    if c := re.search(r"[,:;]", t):
+        # "Did Maya reply, or should I ping her", "Is Patchbay raising, and how much" are still questions
+        return bool(re.match(r"\s*(?:or\b|and (?:how|what|when|where|which|who|why|if)\b)", t[c.end():], re.I)) and is_question(t[:c.start()])
     if m := re.match(rf"^({AUX}) {SUBJECT}", q):
-        if m.group(1) in ("have", "has", "did") and re.match(r"(?:the|my|our|this|that|these|those|his|her|their|any)\b", q[m.end(1) + 1:]):
+        if re.match(r"the\b" if m.group(1) == "did" else r"(?:the|my|our|this|that|these|those|his|her|their|any)\b", q[m.end(1) + 1:]) \
+                and m.group(1) in ("have", "has", "did"):
             # "have my founders replied", "did the patchbay intro go out"; not "Have the term sheet from Raj", "Did the intro to Cara"
             return bool(re.search(r"\b(?:\w{3,}ed|been|gone|come|done|met|sent|heard|seen|got|gotten|go|reply|respond|send|"
                                   r"close|sign|happen|land|ship|launch|get|work|show|turn|raise|say|mention|hear)\b", q[m.end():]))
         return True  # "is the deck in", "is there anything due this week", "do my notes mention stripe"
+    w = t.split()
+    if len(w) > 1 and re.fullmatch(AUX, w[0].lower()) and w[0].lower() != "will" and (
+            w[1][:1].isupper() or w[0].lower() in ("did", "does") and re.fullmatch(r"(?!(?:b?ring|ping)$)(?:\w+ing|\w{3,}ed)", w[1].lower())):
+        return True  # a name that ends like "raising" or "impressed": "Did Ahmed reply", "Is Ming raising", "did jared follow up"
     if m := re.match(rf"^{AUX} (?!{NOTE_AFTER_AUX})(\w[\w'.&-]*)", q):
         # "is patchbay raising", "has jonah replied", "did jonah reply"; "will" needs a verb after the name, since
         # "Will Smith from Kite is raising" is a note
@@ -368,6 +378,7 @@ def is_question(t: str) -> bool:
 def route_rules(text: str) -> dict:
     """What a message asks for, by phrase matching (used when no LLM key is set). Statements are notes."""
     t = " ".join(text.strip().split()).rstrip("?!. ")
+    t = re.sub(r"(?i)\b(what|who|how|where|when)(?:s|’s)\b", r"\1's", t)  # "whats next", "who’s raising" (phones)
     if not (text.strip().endswith("?") or len(t.split()) <= 12):
         return {"intent": "save_note", "query": ""}  # longer statements are notes, even if they mention "follow up"
     lead = r"^(?:hey |hi |ok |okay )?(?:can you |could you |would you |please |pls |i want you to |i'd like you to |help me )?"

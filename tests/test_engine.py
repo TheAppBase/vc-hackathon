@@ -106,6 +106,13 @@ check("Met Raj Patel, CEO of Kite, at the summit on Saturday.", event="summit")
 check("Met Raj and Priya at the founders dinner tonight.", event="founders dinner")
 check("Met Raj. She's happy to send us the data room.", next_step=None)
 check("Met Raj. He’ll hopefully send the deck Monday.", next_step=None)
+# round 6
+check("Met Jonah. The IC memo is done.", step_done=True)
+check("Met Jonah. Intro to Cara is done today.", step_done=True)
+check("Met Raj Patel from Kite, he's pitching at demo day on Thursday.", event=None)
+check("Met Raj Patel from Kite, let's meet at the summit on Friday.", event=None)
+check("Spoke with Jonah Weiss. Intro'd him to Cara.", next_step=None, step_done=True)
+check("Coffee with Maya Okafor. I’ve sent her the deck.", step_done=True)
 # router
 R = engine.route_rules
 for q, intent, query in [("Best founders I met at YC demo day: Patchbay", "save_note", ""), ("Jonah from Patchbay said his team working on payments", "save_note", ""),
@@ -124,7 +131,10 @@ for q, intent, query in [("Best founders I met at YC demo day: Patchbay", "save_
                          ("Did lunch with Jonah Weiss from Patchbay", "save_note", ""), ("Can meet Raj next Tuesday at 3", "save_note", ""),
                          ("rank my climate founders", "rank", ""), ("rank them", "rank", ""), ("show me my notes", "conversations", ""),
                          ("anyone know maya chen", "who_knows", "maya chen"), ("was jonah at demo day", "help", ""),
-                         ("Was great meeting Jonah at demo day", "save_note", ""), ("show me my climate founders", "rank", ""), ("Met Jonah Weiss from Patchbay, find time next week", "save_note", "")]:
+                         ("Was great meeting Jonah at demo day", "save_note", ""),
+                         ("Did my founders follow up", "help", ""), ("Did Ahmed reply", "help", ""), ("Is Ming raising", "help", ""),
+                         ("did jared follow up", "help", ""), ("Did Maya reply, or should I ping her", "help", ""), ("whats next", "conversations", ""),
+                         ("Did the intro call with Raj", "save_note", ""), ("Is raising a $2M seed", "save_note", ""), ("show me my climate founders", "rank", ""), ("Met Jonah Weiss from Patchbay, find time next week", "save_note", "")]:
     r = R(q)
     if (r["intent"], r["query"]) != (intent, query):
         fails.append(f"route {q!r}: {r}, want {intent}/{query}")

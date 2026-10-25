@@ -34,7 +34,10 @@ SECRET_RES = [
     (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"), "a token"),
     # "password: hunter22", "pin is 4455", "pw = x9!k", "password hunter22"; not "Pinecone", "pin down", "password reset"
     # or "the password is weak." (a full stop or comma after a plain word is not a symbol).
-    (re.compile(r"\b(?:(?:password|passphrase|passcode|passwd|pwd|pw|pin code|pin)\b(?:"
+    (re.compile(r"\b(?:(?:password|passphrase|passcode|passwd|pwd|pw|pin code|pin)\b"
+                # "the password for the data room is X", "passcode to Maya's deck: X": up to 4 words before ":", "=" or
+                # "is" (not after a bare "pin": "the pin for the partner meeting is 10:30am" is not a secret)
+                r"(?:(?<!\bpin)\s+(?:for|to|of|on)\s+(?:[\w.'’-]+\s+){0,3}?[\w.'’-]+(?=\s*(?:[:=]|\bis\b)))?(?:"
                 r"\s*(?::|=)\s*['\"“]?(?=" + V + r"*(?:\d|_|[^\w\s'\"“”.,;:?)](?=" + V + r")|[!@#$%^&*~](?!" + V + r")))" + V + r"{3,}"
                 r"|\s*\bis\b\s*(?:[:=]\s*)?['\"“]?(?=" + V + r"*(?:\d|_|(?:[^\w\s'\"“”.,;:?!)]|!(?=[A-Za-z0-9]))(?=" + V + r")|[!@#$%^&*~]" + V + r"*$))" + V + r"{3,})"
                 r"|(?:password|passphrase|passcode|passwd|pwd|pw)\b\s+['\"“]?(?=" + V + r"*\d)(?=" + V + r"*[A-Za-z])" + V + r"{6,})['\"”]?",
