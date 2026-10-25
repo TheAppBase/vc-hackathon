@@ -163,11 +163,12 @@ def load_user(u: str) -> dict | None:
     user, auth = store.get_many([f"users/{u}.json", f"auth/{u}.json"])
     if not user:
         return None
-    if auth:
+    newer = user.get("password") and (not auth or user.get("pw_ver", 0) > auth.get("pw_ver", 0))
+    if auth and not newer:
         user.update(password=auth.get("password"), pw_ver=auth.get("pw_ver", 0), _auth=True)
-    elif user.get("password"):  # an account from before passwords had their own blob: move it there
+    elif newer:  # from before passwords had their own blob, or a sign-up whose auth/ write failed: move it there
         with contextlib.suppress(Exception):
-            store.put(f"auth/{u}.json", {"password": user["password"], "pw_ver": user.get("pw_ver", 0)}, overwrite=False)
+            store.put(f"auth/{u}.json", {"password": user["password"], "pw_ver": user.get("pw_ver", 0)}, overwrite=bool(auth))
             user["_auth"] = True
     return user
 
@@ -782,7 +783,9 @@ def known_device(user: dict) -> str | None:
     """This browser's id if it has signed in to this account with its current password (a signed cookie set at
     sign-in), so strangers' tries on the account never use up the owner's tries."""
     d = _device()
-    return d["id"] if _device_tag(user) in (d.get("users") or []) else None
+    tags = d.get("users") or []
+    legacy = user.get("pw_ver", 0) <= 1 and user["username"] in tags  # remembered before tags existed, never changed since
+    return d["id"] if _device_tag(user) in tags or legacy else None
 
 
 def remember_device(resp, user: dict):
@@ -809,9 +812,12 @@ def _reserve(path: str, t: float) -> bool:
                 continue  # its holder just finished: try once more
             if t - cur.get("t", 0) < 3 * ATTEMPT_SECONDS:
                 return False
+            mark = f"{path[:-5]}.x{cur.get('t', 0)}.json"
             try:  # only the one request that claims this stale blob's takeover marker may delete it
-                store.put(f"{path[:-5]}.x{cur.get('t', 0)}.json", {"t": t}, overwrite=False)
+                store.put(mark, {"t": t}, overwrite=False)
             except store.Exists:
+                if t - (store.get(mark) or {"t": t}).get("t", t) >= 3 * ATTEMPT_SECONDS:
+                    store.delete(mark)  # that takeover failed or died before its delete: let the next try claim it
                 return False
             store.delete(path)
     return False
@@ -872,8 +878,9 @@ def api_signup():
         return jsonify({"error": "Use 2 to 30 letters, numbers, dots, dashes or underscores."}), 400
     if password_problem(pw):
         return jsonify({"error": password_problem(pw)}), 400
+    prev = store.get(f"auth/{u}.json") or {}  # left by a removed account: its open sessions must not carry over
     user = {"username": u, "name": name, "created_at": now(), "team": [], "settings": {"mode": "ask"},
-            "password": generate_password_hash(pw), "pw_ver": 1}
+            "password": generate_password_hash(pw), "pw_ver": prev.get("pw_ver", 0) + 1}
     try:
         # One write claims the username (even if two people sign up at once) and holds the hash, so a failure after it
         # never leaves an account nobody can sign in to.
@@ -881,7 +888,7 @@ def api_signup():
     except store.Exists:
         return jsonify({"error": f"@{u} is taken."}), 409
     with contextlib.suppress(Exception):  # then the hash's own blob; if this fails, load_user moves it there later
-        store.put(f"auth/{u}.json", {"password": user["password"], "pw_ver": 1})
+        store.put(f"auth/{u}.json", {"password": user["password"], "pw_ver": user["pw_ver"]})
         user["_auth"] = True
     start_session(user)
     return remember_device(jsonify({"user": public(user)}), user)

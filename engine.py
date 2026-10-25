@@ -124,7 +124,9 @@ DONE = re.compile(r"\b(sent|done|followed up|introduced|booked|scheduled|wrapped
 # The investor's own finished step: "Sent Maya the deck", "I introduced her to Cara", "Done:" (not "She booked $25k MRR").
 MY_DONE = re.compile(r"^(?:i(?:'ve| have)?\s+|we(?:'ve| have)?\s+|just\s+|already\s+)?(?:sent|followed up|introduced|booked|"
                      r"scheduled|finished|completed|intro'd|emailed|pinged)\b|^done\b|^(?:that's|it's|that is|it is|all)\s+done\b|"
-                     r"(?:^|[,;:]\s*)(?:all\s+)?done[.!]?$|\b(?:intro|introduction|follow[- ]?up|deck|memo|email|term sheet|call)\b[^.,;]*\b(?:is|was) done\b", re.I)
+                     r"(?:^|[,;:]\s*)(?:all\s+)?done[.!]?$|(?:^|[,;:]\s*)(?:(?:also|and|so|btw|fyi|update)[,:]?\s+)?(?:the |my |our )?"
+                     r"(?:intro(?:duction)?|follow[- ]?up|memo|email|term sheet|call)(?:\s+(?:to|with|for)(?:\s+[\w'’]+){1,3})?"
+                     r"\s+(?:is|was)\s+(?:now\s+|all\s+)?done(?:\s+(?:now|already|too))?(?=\s*(?:[.!,;:]|$|\b(?:and|so|but)\b))", re.I)
 ACTION = re.compile(r"\b(send|intro|introduce|schedule|set up|loop in|book|get (?:him|her|them)|reach out|ping|email)\b", re.I)
 
 
@@ -177,16 +179,18 @@ def next_step_of(text: str, founder: str | None = None) -> str | None:
     who = r"he|she|they|her team|his team|their team|the founder|the team"
     if founder:
         who += "|" + re.escape(founder.split()[0])
-    plan = (r"(?:will|is going to|are going to|plans? to|promised to|wants? to|(?:is|are) (?:happy|keen|willing|glad|able) to)"
+    plan = (r"(?:will|'ll|is going to|are going to|plans? to|promised to|wants? to|(?:is|are|'s|'re) (?:happy|keen|willing|glad|able) to)"
             r"\s+(?:(?:also|probably|hopefully|definitely|then|likely)\s+)?")
     # The founder's own plan: "She will send us the data room", "Maya is going to intro us" (not "She has a lead, so...").
-    theirs = re.compile(rf"(?:^|\b)(?:{who})(?:\s+|(?='(?:ll|s going to|re going to)))(?:'ll\s+(?:(?:also|probably|then)\s+)?|"
-                        rf"'s going to\s+|'re going to\s+|{plan})$", re.I)
+    theirs = re.compile(rf"(?:^|\b)(?:{who})(?:\s+|(?='))(?:'s going to\s+|'re going to\s+|{plan})$", re.I)
 
     def open_from(sentence: str, rx: re.Pattern) -> str | None:
+        plain, last = sentence.replace("’", "'"), None  # phones type "she’ll"
         for m in rx.finditer(sentence):
-            if rx is ACTION and theirs.search(sentence[:m.start()]):
-                continue  # "he will send us the data room"
+            if rx is ACTION and (theirs.search(plain[:m.start()]) or
+                                 last is not None and re.fullmatch(r"[^,;:]*\band\s+", plain[last:m.start()])):
+                last = m.start()
+                continue  # "he will send us the data room (and intro us to his lead)"
             if DONE.search(sentence[m.start():]):
                 return None  # "Sent Priya the intro, done" is not a next step
             return _clause(sentence, m.start())
@@ -259,7 +263,9 @@ def _event_in(text: str, low: str) -> str | None:
         start = max(text.rfind(".", 0, m.start()), text.rfind("\n", 0, m.start())) + 1
         past = [p for p in PAST.finditer(text, start, m.start())]
         # "Met Maya at the summit on Saturday" (when they met), not "met Raj, see him at the dinner on Thursday"
-        tail = SOON if past and not re.search(r"[,;]|\b(?:and|but|will|see|be)\b|'ll\b", text[past[-1].end():m.start()]) else NOT_PAST
+        later = past and re.search(r"'ll\b|\b(?:will|going to|gonna)\s+(?:\w+\s+)?(?:see|meet|catch|be)\b|\b(?:we're|we are|i'm|i am)\s+(?:seeing|meeting)\b|"
+                                   r"\b(?:see|seeing|meet|meeting|catch|catching)\s+(?:him|her|them|you|up|again)\b", text[past[-1].end():m.start()], re.I)
+        tail = SOON if past and not later else NOT_PAST
         e = re.match(rf"((?:[A-Z0-9][\w'&-]*\s){{0,4}}{mod}(?i:{EVENT_CORE})|(?:[A-Z0-9][\w'&-]*\s){{1,4}}(?i:week|fair)|"
                      rf"(?i:career|job|trade|science|startup) fair)\b{tail}", text[m.end():])
         if e:
@@ -308,12 +314,55 @@ def heuristic_note(text: str, today: dt.date) -> dict:
     if ext["next_step"] and not ext["next_due"]:
         sents = [x.strip() for x in SENTENCE_END.split(text) if x and x.strip()]
         at = next((i for i, x in enumerate(sents) if ext["next_step"][:40] in x), None)
-        if at is not None and at + 1 < len(sents) and re.match(r"(?:ideally )?(?:by|due|before|on)\s+(?:(?:this|next) )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
-                                                                     r"tomorrow|eod|end of (?:the )?(?:day|week|month)|next week)[.!]?$", sents[at + 1], re.I):
+        if at is not None and at + 1 < len(sents) and re.match(
+                r"(?:ideally |hopefully |preferably )?(?:due (?:by |on |before )?|by |before |on |no later than )(?:(?:this|next|the) )?(?:eod |cob )?"
+                r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|eod|cob|end of (?:the |this |next )?(?:day|week|month)|next week)"
+                r"(?:['’]s (?:partner |ic |board |team )?(?:meeting|call|sync))?"
+                r"(?:,? (?:morning|afternoon|evening|night|noon|at noon|at the latest|latest|please|ideally|"
+                r"at \d{1,2}(?::\d\d)?(?: ?[ap]\.?m\.?)?|\d{1,2}(?::\d\d)? ?[ap]\.?m\.?)){0,2}[.!]?$", sents[at + 1], re.I):
             ext["next_due"] = due_from(sents[at + 1], today)
     if not ext["next_step"]:
         ext["step_done"] = any(MY_DONE.search(x.strip()) for x in SENTENCE_END.split(text) if x and x.strip())
     return ext
+
+
+AUX = r"(?:did|do|does|am|is|are|was|were|can|could|should|would|will|have|has)"
+# Words that start a shorthand note right after the auxiliary: "Will send...", "Have a call...", "Is raising...",
+# "Has three pilots", "Did lunch with...", "Can meet...", "Would love to...", "Could be a fit", "Was great meeting..."
+NOTE_AFTER_AUX = (r"(?:to|a|an|been|got|just|already|also|still|really|very|so|super|quite|pretty|not|definitely|probably|"
+                  r"great|good|nice|fun|amazing|awesome|impressive|impressed|excited|keen|happy|glad|interested|able|at|in|on|"
+                  r"\d[\w$.,%]*|\$\S*|one|two|three|four|five|six|seven|eight|nine|ten|several|some|lots|plenty|"
+                  r"send|follow|intro|introduce|email|call|ping|meet|book|schedule|set|share|check|loop|review|circle|reach|"
+                  r"get|do|be|have|need|try|look|chat|catch|connect|draft|write|pass|think|keep|make|take|love|like|back|"
+                  r"lunch|coffee|dinner|breakfast|drinks|intros|diligence|dd|calls|customers|revenue|traction|users|technical|profitable|"
+                  r"seed|pre-\w+|ex-\w+|\w+ing|\w{3,}ed)\b")
+SUBJECT = (r"(?:i|we|you|anyone|anybody|someone|somebody|anything|they|he|she|it|there|the|my|our|this|that|these|those|"
+           r"any|his|her|their)\b")
+
+
+def is_question(t: str) -> bool:
+    """A short message without "?" that reads as a question. Commas, colons and semicolons mark shorthand notes
+    ("Did coffee with Raj, wants intro to Cara", "What Jonah said: raising in Q1")."""
+    q = t.lower()
+    if re.search(r"[,:;]", t):
+        return False
+    if m := re.match(rf"^({AUX}) {SUBJECT}", q):
+        if m.group(1) in ("have", "has", "did") and re.match(r"(?:the|my|our|this|that|these|those|his|her|their|any)\b", q[m.end(1) + 1:]):
+            # "have my founders replied", "did the patchbay intro go out"; not "Have the term sheet from Raj", "Did the intro to Cara"
+            return bool(re.search(r"\b(?:\w{3,}ed|been|gone|come|done|met|sent|heard|seen|got|gotten|go|reply|respond|send|"
+                                  r"close|sign|happen|land|ship|launch|get|work|show|turn|raise|say|mention|hear)\b", q[m.end():]))
+        return True  # "is the deck in", "is there anything due this week", "do my notes mention stripe"
+    if m := re.match(rf"^{AUX} (?!{NOTE_AFTER_AUX})(\w[\w'.&-]*)", q):
+        # "is patchbay raising", "has jonah replied", "did jonah reply"; "will" needs a verb after the name, since
+        # "Will Smith from Kite is raising" is a note
+        return not q.startswith("will ") or bool(re.match(r"^will \S+ (?:\S+ )?(?:send|reply|respond|intro|introduce|email|"
+                                                          r"call|meet|share|follow|get|be|raise|close|take|sign|come|join|"
+                                                          r"lead|invest|do|make|have|need|want)\b", q))
+    if re.match(r"^(?:what|which|where|when|why|how)\b(?! an? \b| (?:i|we|he|she|they)\b)", q):
+        # "what about quillstack", "what stage is quillstack at", "how long ago did i meet maya";
+        # not "What a pitch", "When I met Raj he was already raising", "What I liked about Patchbay is the team"
+        return True
+    return bool(re.match(r"^who\b(?! i met| we met)", q))
 
 
 def route_rules(text: str) -> dict:
@@ -327,16 +376,17 @@ def route_rules(text: str) -> dict:
         return re.match(lead + pattern, t, flags=re.I)
 
     if m := match(r"(?:ask (?:the |my )?team (?:about |if anyone knows )?|who (?:else )?knows |does anyone know |"
-                  r"has anyone (?:else )?met )(.+)$"):
+                  r"(?:has |does )?(?:anyone|anybody|any one) (?:else )?(?:know|knows|met) )(.+)$"):
         return {"intent": "who_knows", "query": m.group(1)}
     if (m := match(r"(?:look ?up|search(?: akta(?:\.pro)?)?(?: for)?|research|check out|tell me about)\s+(.+?)(?: on akta(?:\.pro)?)?$")) \
             and not re.search(r"\b(founders?|startups?|companies)\b", m.group(1), flags=re.I):
         return {"intent": "lookup", "query": m.group(1)}
     q = t.lower()
-    if match(r"(?:rank|score|prioriti[sz]e) (?:my |the )?(?:founders|startups|companies|pipeline)$|rank$") or \
+    if match(r"(?:rank|score|prioriti[sz]e) (?:my |the )?(?:founders|startups|companies|pipeline)$|rank$|(?:rank|prioriti[sz]e|sort) (?:(?:my|our|the|these|those|all)(?: [\w-]+){0,3} (?:founders|startups|companies|pipeline|deals)|them|these|those)$") or \
             re.search(r"^(?:show )?(?:me )?my (?:best )?founders$|^(?:who are )?my best founders$|^who should i (meet|back|call)", q):
         return {"intent": "rank", "query": ""}
-    if re.search(r"^(?:show|find|list|get|see)(?: me)? (?:all )?(?:my|our|the) (?:founders|startups|companies|pipeline|people)$", q):
+    if re.search(r"^(?:show|find|list|get|see)(?: me)? (?:all )?(?:my|our|the) (?:founders|startups|companies|pipeline|people|notes)$|"
+                 r"^(?:show|find|list|get|see)(?: me)? (?:all )?(?:my|our|the) (?:founders|startups|companies|people) (?:i|we) (?:met|talked to|spoke (?:to|with))\b", q):
         return {"intent": "conversations", "query": ""}
     # "Show me my founders" is the user's own founders, never a search for new ones.
     if (m := match(r"(?:source|find|look for|search for|discover|show me|get me|suggest|recommend|scout)\b"
@@ -355,13 +405,8 @@ def route_rules(text: str) -> dict:
     if re.match(r"^(help|what can you do)$", q):
         return {"intent": "help", "query": ""}
     # Dictated questions often have no "?": "did jonah reply", "is patchbay raising", "which founders did i meet at yc".
-    if text.strip().endswith("?") or re.match(
-            r"^(?:did|do|does|am|is|are|was|were|can|could|should|would|will|have|has) (?:i|we|you|anyone|anybody|they|he|she|it)\b|"
-            r"^(?:did|does|can|could|would) (?!to\b|a\b|an\b|the\b)\w+|"
-            r"^(?:what|when|where|which|why|how|who)(?:'s| (?:did|do|does|is|are|was|were|have|has|should|can|could|would|will|"
-            r"much|many|founders?|startups?|companies)\b)|^who\b(?! i met| we met)", q) or re.match(
-            r"(?i:did|does|is|are|has|have|can|should|would)\s+[A-Z]", t):  # not "Will": "Will Smith from Kite..." is a note
-        return {"intent": "help", "query": ""}  # an unanswered question is never saved into the shared notes
+    if text.strip().endswith("?") or is_question(t):
+        return {"intent": "help", "query": "", "question": True}  # an unanswered question is never saved into the shared notes
     return {"intent": "save_note", "query": ""}
 
 

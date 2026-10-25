@@ -210,11 +210,12 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   async function run(fn) {
     if (busy) return; busy = true;
     try { await fn(); } catch (e) {
-      if (e instanceof NeedsSignin) { requeue(); return; }
+      if (e instanceof NeedsSignin) { if (current) queued.unshift(current); return; }  // its own request was refused: it goes back in the box (finally)
       say(esc(e.message || 'Something went wrong. Try again.'));
     } finally {
       busy = false; current = null;
-      if (queued.length && $('#auth').hidden) { const q = queued.shift(); send(q.text, q.via); }
+      if (!$('#auth').hidden) requeue();  // signed out while this ran: what is waiting goes back in the box
+      else if (queued.length) { const q = queued.shift(); send(q.text, q.via); }
     }
   }
 
@@ -261,7 +262,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
         // Anchor on the last word already in the box (the recognizer may merge or insert words before it); fall back to the count.
         const W = words(all), nw = (w) => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, ''), last = cut.shown.length ? nw(cut.shown[cut.shown.length - 1]) : '';
         let k = cut.words;
-        if (last) { let best = -1; W.forEach((w, j) => { if (nw(w) === last && (best < 0 || Math.abs(j + 1 - cut.words) < Math.abs(best + 1 - cut.words))) best = j; }); if (best >= 0) k = best + 1; }
+        if (last) { let best = -1; W.forEach((w, j) => { if (nw(w) === last && Math.abs(j + 1 - cut.words) <= 2 && (best < 0 || Math.abs(j + 1 - cut.words) < Math.abs(best + 1 - cut.words))) best = j; }); if (best >= 0) k = best + 1; }
         const fresh = W.slice(k).join(' ');
         if (done) { addFinal(fresh); skipBefore = e.results.length; cut = null; interimIdx = -1; }
         else interim = fresh;
@@ -407,8 +408,17 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     if (r.intent === 'lookup') return r.query ? lookup(r.query) : say('Which company should I look up?');
     if (r.intent === 'who_knows') return r.query ? askTeam(r.query) : say('Who should I ask the team about?');
     if (r.intent === 'team') return team();
+    if (r.intent === 'help' && r.question) return notSaved(text, via);
     if (r.intent === 'help') return say(esc(HELP));
     return say(esc(r.reply || HELP));
+  }
+  // Without the AI, a message that reads like a question is never saved on a guess; if it was a note, one tap saves it.
+  function notSaved(text, via) {
+    const el = say(`That sounds like a question, so I didn't save it as a note. Try <b>Who have I been talking to?</b>, <b>Rank my founders</b> or <b>Who knows Patchbay?</b>, or record a note after any meeting.
+      <div class="save-anyway" style="margin-top:8px"><button class="btn" data-save>${ic('note', 14)}It was a note: save it</button></div>`);
+    const b = el.querySelector('[data-save]');
+    b.onclick = () => run(async () => { b.disabled = true; b.classList.add('busy'); current = {text, via}; await note(text, via); b.closest('.save-anyway').remove(); })
+      .finally(() => { b.disabled = false; b.classList.remove('busy'); });
   }
   function thinking() {
     const el = add(`<div class="msg typing">${agentAvatar()}<div class="bubble"><i></i><i></i><i></i></div></div>`);
@@ -618,7 +628,6 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   let queued = [], current = null, owner = null;  // owner: whose messages are waiting
   // Signed out with messages still waiting: put them back in the box, so nothing typed or dictated is lost.
   const requeue = () => {
-    if (current) { queued.unshift(current); current = null; }
     if (queued.length && !input.value.trim()) { input.value = queued.shift().text; grow(); }
   };
   function send(text, via) { current = {text, via}; if (step >= 0) run(() => answer(text)); else run(() => ask(text, via)); }
@@ -642,7 +651,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     password_changed: 'Your password was changed on another device. Sign in with the new one.',
     expired: 'Your session ended. Sign in again.'};
   function showAuth(reason) {
-    stopDictation(); requeue();
+    stopDictation(); if (!busy) requeue();  // while a message is in flight, run() decides when it ends (it may still save)
     $('#app').hidden = true; $('#open-settings').hidden = true; $('#settings').open && $('#settings').close(); $('#auth').hidden = false;
     if (reason) modeUI('in');  // signed out mid-session: back to the Sign in tab
     cancelWait(); authGo.disabled = false; authGo.classList.remove('busy'); authGo.textContent = authMode === 'up' ? 'Create account' : 'Sign in';

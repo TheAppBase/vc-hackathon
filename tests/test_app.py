@@ -137,6 +137,19 @@ for t in ['Met Maya from Quillstack Labs. Next step: send her the deck by Friday
     e.post('/api/notes', json={'text': t})
 fs = e.get('/api/founders').json['founders']
 ok(len(fs) == 1 and not fs[0]['next_step'], f"Quillstack Labs / Quillstack split: {[(f['founder'], f['company'], f['next_step']) for f in fs]}")
+# --- round 5: a failed takeover can't lock a slot; old device cookies; a leftover password blob
+path, t = 'attempts/zed/d-x.json', time.time()
+store.put(path, {'t': t - 100}); store.put(f"{path[:-5]}.x{t - 100}.json", {'t': t - 100})
+ok(not app._reserve(path, t) and app._reserve(path, t), "a takeover that died left the slot locked")
+f = app.app.test_client(); f.post('/api/signup', json={'name': 'Fay', 'username': 'fay', 'password': 'correct horse'})
+with app.app.test_request_context():
+    legacy = app._device_signer().dumps({'id': 'abc123', 'users': ['fay']})
+with app.app.test_request_context(headers={'Cookie': f'lt_device={legacy}'}):
+    ok(app.known_device(app.load_user('fay')) == 'abc123', "an old-style device cookie isn't known")
+os.remove(os.path.join(store.LOCAL, 'users', 'fay.json'))
+f2 = app.app.test_client(); f2.post('/api/signup', json={'name': 'Fay Two', 'username': 'fay', 'password': 'another pass'})
+ok((f.get('/api/me').json or {}).get('user') is None, "the old owner's session got into the re-registered account")
+ok((f2.get('/api/me').json or {}).get('user', {}).get('name') == 'Fay Two', "the new owner isn't signed in")
 # --- F8 session key: a storage error never breaks pages
 store.LIVE = True; app.app.secret_key = None
 orig = store.shared_secret; store.shared_secret = lambda: (_ for _ in ()).throw(RuntimeError('blob down'))

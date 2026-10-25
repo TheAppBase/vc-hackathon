@@ -36,7 +36,7 @@ SECRET_RES = [
     # or "the password is weak." (a full stop or comma after a plain word is not a symbol).
     (re.compile(r"\b(?:(?:password|passphrase|passcode|passwd|pwd|pw|pin code|pin)\b(?:"
                 r"\s*(?::|=)\s*['\"“]?(?=" + V + r"*(?:\d|_|[^\w\s'\"“”.,;:?)](?=" + V + r")|[!@#$%^&*~](?!" + V + r")))" + V + r"{3,}"
-                r"|\s*\bis\b\s*['\"“]?(?=" + V + r"*(?:\d|_|[^\w\s'\"“”.,;:?)](?=" + V + r")|[!@#$%^&*~]" + V + r"*$))" + V + r"{3,})"
+                r"|\s*\bis\b\s*(?:[:=]\s*)?['\"“]?(?=" + V + r"*(?:\d|_|(?:[^\w\s'\"“”.,;:?!)]|!(?=[A-Za-z0-9]))(?=" + V + r")|[!@#$%^&*~]" + V + r"*$))" + V + r"{3,})"
                 r"|(?:password|passphrase|passcode|passwd|pwd|pw)\b\s+['\"“]?(?=" + V + r"*\d)(?=" + V + r"*[A-Za-z])" + V + r"{6,})['\"”]?",
                 re.I), "a password"),
 ]
@@ -91,9 +91,13 @@ QUALITY = re.compile(r"(?:^|_)(?:instructions?|tasks?|plan|planning|format|forma
                      r"(?:_|$)", re.I)  # never safety paths
 STRONG = re.compile(r"unsafe|harm|pii|secret|injection|jailbreak|toxic|violen|hate|sexual|abuse|guardrail", re.I)
 ENVELOPES = {"evaluation", "data", "result", "results"}
+# What PRISM echoes back from the submitted trajectory before it has evaluated anything.
+META = {"id", "trajectory_id", "project_id", "created_at", "updated_at", "agent_id", "agent_name", "conversation_id",
+        "session_id", "request_id", "final_status", "step_count", "steps", "model", "total_duration_ms", "evaluated"}
 
 
 def _safe_part(p: str) -> bool:
+    p = re.sub(r"[\s-]+", "_", p.lower())  # "Instruction Compliance" reads like instruction_compliance
     return bool(SAFETY.search(p)) and (not QUALITY.search(p) or bool(STRONG.search(p)))
 
 
@@ -111,23 +115,23 @@ def _decide(ev) -> tuple[str, str]:
         return "unknown", "PRISM returned no evaluation"
     found: list[tuple[str, str]] = []
 
-    def walk(x, path: tuple):
+    def walk(x, path: tuple, listed: bool = False):
         key = path[-1] if path else ""
         safety = any(_safe_part(p) for p in path)
-        depth = len([p for p in path if p not in ENVELOPES])  # {"evaluation": {"decision": "block"}} is still top level
+        depth = len([p for p in path if p not in ENVELOPES]) + listed  # {"evaluation": {"decision": "block"}} is still top level
         where = ".".join(path) or "evaluation"
         if isinstance(x, dict):
             # {"name": "pii", "status": "triggered"}: the check's own name says it is a safety check.
             tag = next((str(x[k]).lower() for k in ("name", "type", "category", "guardrail", "check", "rule")
                         if isinstance(x.get(k), str) and _safe_part(x[k])), None)
             for k, v in x.items():
-                walk(v, path + ((tag,) if tag else ()) + (str(k).lower(),))
+                walk(v, path + ((tag,) if tag else ()) + (str(k).lower(),), listed)
         elif isinstance(x, list):
             if x and (key in ("guardrail_violations", "policy_violations", "triggered_guardrails", "safety_violations")
                       or (safety and key in ("violations", "flags", "issues", "triggered", "failures", "detections"))):
                 found.append(("block", f"{where}: {json.dumps(x, default=str)[:160]}"))
             for v in x:
-                walk(v, path)
+                walk(v, path, listed or bool(path))  # items of a results list are per-metric, not top level
         elif isinstance(x, bool):
             if not safety:
                 return
@@ -135,12 +139,12 @@ def _decide(ev) -> tuple[str, str]:
                 found.append(("allow" if x else "block", f"{where}={x}"))
             elif key in DETECT_KEYS:
                 found.append(("block" if x else "allow", f"{where}={x}"))
-            elif SAFETY.fullmatch(key or "x"):
+            elif key in ("safety", "compliance", "policy", "policies"):
                 found.append(("allow" if x else "block", f"{where}={x}"))
         elif isinstance(x, str):
             v = re.sub(r"[\s-]+", "_", x.strip().lower())
             head, _, last = key.rpartition("_")
-            if safety and last in VERDICT_KEYS and head and SAFETY.search(head):
+            if safety and last in VERDICT_KEYS and head not in ("evaluation", "eval", "evaluator", "run", "job"):
                 key = last  # "guardrail_status": "failed"
             if key in ("decision", "verdict", "action") and v in BLOCK_WORDS and (safety or depth == 1):
                 found.append(("block", f"{where}={v}"))
@@ -225,11 +229,12 @@ def review(agent: str, agent_id: str, session_id: str, action: dict, budget: flo
         if isinstance(body, dict) and not (body.get("status") or body.get("evaluation_status")):
             body = next((body[k] for k in ENVELOPES if isinstance(body.get(k), dict)), body)
         status = str(body.get("status") or body.get("evaluation_status") or "").lower() if isinstance(body, dict) else ""
-        finished = status in ("completed", "complete", "done", "finished", "failed", "error", "success", "succeeded")
+        finished = status in ("completed", "complete", "done", "finished", "failed", "error", "success", "succeeded",
+                              "evaluated", "scored", "skipped", "cancelled", "canceled", "ok")
         answered = finished or (not status and isinstance(body, dict)
-                                and not any(v is None for k, v in body.items() if SAFETY.search(str(k)))
-                                and any(v not in (None, "", [], {}) for k, v in body.items()
-                                        if str(k).lower() not in ("id", "trajectory_id", "project_id", "created_at", "updated_at")))
+                                and not any(v is None for k, v in body.items() if SAFETY.search(str(k)) and not str(k).lower().endswith("_id"))
+                                and not any(body.get(k) is False for k in ("evaluated", "ready", "complete", "completed", "done"))
+                                and any(v not in (None, "", [], {}) for k, v in body.items() if str(k).lower() not in META))
         if decision != "pending" and answered:
             break  # PRISM answered and nothing is still pending; polling again won't change its answer
         time.sleep(min(1.5, max(0.0, deadline - time.time() - 0.2)))
