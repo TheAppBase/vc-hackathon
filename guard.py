@@ -30,13 +30,15 @@ SECRET_RES = [
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "an AWS key"),
     (re.compile(r"\baws_secret_access_key\b\s*[:=]\s*['\"]?[A-Za-z0-9/+=]{40}", re.I), "an AWS key"),
     (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{16,}"), "a bearer token"),
-    (re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s:/@]+:[^\s/@]+@"), "a password"),  # postgres://admin:S3cret@host
+    (re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s:/@]*:[^\s/]*@"), "a password"),  # postgres://admin:S3cret@host
     (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"), "a token"),
     # "password: hunter22", "pin is 4455", "pw = x9!k", "password hunter22"; not "Pinecone", "pin down", "password reset"
     # or "the password is weak." (a full stop or comma after a plain word is not a symbol).
-    (re.compile(r"\b(?:password|passphrase|passcode|passwd|pwd|pw|pin code|pin)\b"
-                r"(?:\s*(?::|=|\bis\b)\s*['\"“]?(?=" + V + r"*(?:\d|_|[^\w\s'\"“”.,;:?!)](?=" + V + r")|[!@#$%^&*~]" + V + r"*$))"
-                + V + r"{3,}|\s+['\"“]?(?=" + V + r"*\d)(?=" + V + r"*[A-Za-z])" + V + r"{6,})['\"”]?", re.I), "a password"),
+    (re.compile(r"\b(?:(?:password|passphrase|passcode|passwd|pwd|pw|pin code|pin)\b(?:"
+                r"\s*(?::|=)\s*['\"“]?(?=" + V + r"*(?:\d|_|[^\w\s'\"“”.,;:?)](?=" + V + r")|[!@#$%^&*~](?!" + V + r")))" + V + r"{3,}"
+                r"|\s*\bis\b\s*['\"“]?(?=" + V + r"*(?:\d|_|[^\w\s'\"“”.,;:?)](?=" + V + r")|[!@#$%^&*~]" + V + r"*$))" + V + r"{3,})"
+                r"|(?:password|passphrase|passcode|passwd|pwd|pw)\b\s+['\"“]?(?=" + V + r"*\d)(?=" + V + r"*[A-Za-z])" + V + r"{6,})['\"”]?",
+                re.I), "a password"),
 ]
 CARD_RE = re.compile(r"(?<![\d+])[2-6](?:[ -]?\d){12,18}(?!\d)")  # payment cards start with 2-6
 MAX_NOTE = 20000
@@ -85,7 +87,16 @@ def redact(text: str) -> tuple[str, list[str]]:
     return text, list(dict.fromkeys(found))
 
 
-QUALITY = re.compile(r"instruction|task|plan|format|schema|goal|tool|efficien|reliab|quality", re.I)  # never safety paths
+QUALITY = re.compile(r"(?:^|_)(?:instructions?|tasks?|plan|planning|format|formatting|schema|goals?|tools?|efficien\w*|reliab\w*|quality)"
+                     r"(?:_|$)", re.I)  # never safety paths
+STRONG = re.compile(r"unsafe|harm|pii|secret|injection|jailbreak|toxic|violen|hate|sexual|abuse|guardrail", re.I)
+ENVELOPES = {"evaluation", "data", "result", "results"}
+
+
+def _safe_part(p: str) -> bool:
+    return bool(SAFETY.search(p)) and (not QUALITY.search(p) or bool(STRONG.search(p)))
+
+
 PASS_KEYS = {"passed", "pass", "safe", "is_safe", "approved", "allowed", "compliant", "is_compliant"}  # True = fine
 # Detections: True means something was found, so True blocks ("unsafe": true, "pii": true, "jailbreak": true).
 DETECT_KEYS = {"blocked", "block", "flagged", "triggered", "detected", "violation", "is_violation", "violated", "unsafe",
@@ -102,12 +113,13 @@ def _decide(ev) -> tuple[str, str]:
 
     def walk(x, path: tuple):
         key = path[-1] if path else ""
-        safety = any(SAFETY.search(p) and not QUALITY.search(p) for p in path)
+        safety = any(_safe_part(p) for p in path)
+        depth = len([p for p in path if p not in ENVELOPES])  # {"evaluation": {"decision": "block"}} is still top level
         where = ".".join(path) or "evaluation"
         if isinstance(x, dict):
             # {"name": "pii", "status": "triggered"}: the check's own name says it is a safety check.
             tag = next((str(x[k]).lower() for k in ("name", "type", "category", "guardrail", "check", "rule")
-                        if isinstance(x.get(k), str) and SAFETY.search(x[k]) and not QUALITY.search(x[k])), None)
+                        if isinstance(x.get(k), str) and _safe_part(x[k])), None)
             for k, v in x.items():
                 walk(v, path + ((tag,) if tag else ()) + (str(k).lower(),))
         elif isinstance(x, list):
@@ -123,16 +135,18 @@ def _decide(ev) -> tuple[str, str]:
                 found.append(("allow" if x else "block", f"{where}={x}"))
             elif key in DETECT_KEYS:
                 found.append(("block" if x else "allow", f"{where}={x}"))
+            elif SAFETY.fullmatch(key or "x"):
+                found.append(("allow" if x else "block", f"{where}={x}"))
         elif isinstance(x, str):
             v = re.sub(r"[\s-]+", "_", x.strip().lower())
-            last = key.rsplit("_", 1)[-1]
-            if safety and last in VERDICT_KEYS:
+            head, _, last = key.rpartition("_")
+            if safety and last in VERDICT_KEYS and head and SAFETY.search(head):
                 key = last  # "guardrail_status": "failed"
-            if key in ("decision", "verdict", "action") and v in BLOCK_WORDS and (safety or len(path) == 1):
+            if key in ("decision", "verdict", "action") and v in BLOCK_WORDS and (safety or depth == 1):
                 found.append(("block", f"{where}={v}"))
             elif key in ("status", "evaluation_status", "state") and v in PENDING:
                 # Only PRISM's overall status or a safety check still running is worth waiting for, not a quality metric.
-                if safety or len(path) == 1:
+                if safety or depth == 1:
                     found.append(("pending", f"{where}={v}"))
             elif safety and (key in VERDICT_KEYS + ("risk", "risk_level", "severity", "label") or SAFETY.fullmatch(key or "x")):
                 if v in FAIL:
@@ -207,9 +221,16 @@ def review(agent: str, agent_id: str, session_id: str, action: dict, budget: flo
             break
         if decision in ("allow", "block"):
             break
-        status = str(last.get("status") or last.get("evaluation_status") or "").lower() if isinstance(last, dict) else ""
+        body = last
+        if isinstance(body, dict) and not (body.get("status") or body.get("evaluation_status")):
+            body = next((body[k] for k in ENVELOPES if isinstance(body.get(k), dict)), body)
+        status = str(body.get("status") or body.get("evaluation_status") or "").lower() if isinstance(body, dict) else ""
         finished = status in ("completed", "complete", "done", "finished", "failed", "error", "success", "succeeded")
-        if decision != "pending" and (finished or (isinstance(last, dict) and any(v is not None for v in last.values()))):
+        answered = finished or (not status and isinstance(body, dict)
+                                and not any(v is None for k, v in body.items() if SAFETY.search(str(k)))
+                                and any(v not in (None, "", [], {}) for k, v in body.items()
+                                        if str(k).lower() not in ("id", "trajectory_id", "project_id", "created_at", "updated_at")))
+        if decision != "pending" and answered:
             break  # PRISM answered and nothing is still pending; polling again won't change its answer
         time.sleep(min(1.5, max(0.0, deadline - time.time() - 0.2)))
     if decision == "pending":

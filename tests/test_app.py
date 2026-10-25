@@ -116,6 +116,27 @@ ok(r.status_code == 429 and 'this account' in r.json['error'], f"account cap mes
 r = c.post('/api/signin', json={'username': 'alex', 'password': 'brand new pass'}, headers=owner)
 ok(r.status_code == 200, f"owner's known device was locked out by strangers: {r.status_code} {r.json}")
 [t.join() for t in ts]
+# --- round 4: known devices end with a password change; a half-failed sign-up still signs in; generalists; company names
+x = app.app.test_client()
+ok(x.post('/api/signin', json={'username': 'dana', 'password': 'correct horse'}).status_code == 200, "dana sign-in")
+dev = x.get_cookie('lt_device').value
+d.post('/api/password', json={'current': 'correct horse', 'new': 'another pass 2'})
+with app.app.test_request_context(headers={'Cookie': f'lt_device={dev}'}):
+    ok(app.known_device(app.load_user('dana')) is None, "a browser stayed 'known' after the password changed")
+with app.app.test_request_context(headers={'Cookie': f"lt_device={d.get_cookie('lt_device').value}"}):
+    ok(app.known_device(app.load_user('dana')) is not None, "the browser that changed the password isn't known")
+orig_put = store.put
+store.put = lambda path, data, overwrite=True: (_ for _ in ()).throw(RuntimeError('down')) if path.startswith('auth/') else orig_put(path, data, overwrite)
+e = app.app.test_client(); r = e.post('/api/signup', json={'name': 'Erin', 'username': 'erin', 'password': 'correct horse'})
+store.put = orig_put
+ok(r.status_code == 200 and app.app.test_client().post('/api/signin', json={'username': 'erin', 'password': 'correct horse'}).status_code == 200,
+   "a sign-up whose password blob failed can't sign in")
+ok(len(app.build_profile({'focus': 'Early-stage generalist'}, 'A B')['sectors']) == 7, "generalist lost its sectors")
+ok(app.build_profile({'focus': 'stage-agnostic, fintech'}, 'A B')['sectors'] == ['fintech'], "stage-agnostic read as sector-agnostic")
+for t in ['Met Maya from Quillstack Labs. Next step: send her the deck by Friday.', 'Caught up with Maya from Quillstack. Sent her the deck, done.']:
+    e.post('/api/notes', json={'text': t})
+fs = e.get('/api/founders').json['founders']
+ok(len(fs) == 1 and not fs[0]['next_step'], f"Quillstack Labs / Quillstack split: {[(f['founder'], f['company'], f['next_step']) for f in fs]}")
 # --- F8 session key: a storage error never breaks pages
 store.LIVE = True; app.app.secret_key = None
 orig = store.shared_secret; store.shared_secret = lambda: (_ for _ in ()).throw(RuntimeError('blob down'))

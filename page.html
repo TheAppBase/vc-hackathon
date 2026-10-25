@@ -160,7 +160,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     const r = await fetch(url, opts);
     let j = {}; try { j = await r.json(); } catch (e) { j = {}; }
     if (r.status === 401) { showAuth(j.reason || (ME ? 'expired' : null)); throw new NeedsSignin(); }
-    if (!r.ok) { const e = new Error(j.message || j.error || ('HTTP ' + r.status)); e.code = j.error; e.status = r.status; e.retryAfter = j.retry_after; throw e; }
+    if (!r.ok) { const e = new Error(j.message || j.error || ('HTTP ' + r.status)); e.said = !!(j.message || j.error); e.code = j.error; e.status = r.status; e.retryAfter = j.retry_after; throw e; }
     return j;
   }
 
@@ -213,8 +213,8 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
       if (e instanceof NeedsSignin) { requeue(); return; }
       say(esc(e.message || 'Something went wrong. Try again.'));
     } finally {
-      busy = false;
-      if (queued.length) { const q = queued.shift(); send(q.text, q.via); }
+      busy = false; current = null;
+      if (queued.length && $('#auth').hidden) { const q = queued.shift(); send(q.text, q.via); }
     }
   }
 
@@ -258,7 +258,11 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
         let all = '', done = true;
         for (let i = cut.from; i < e.results.length; i++) { all += e.results[i][0].transcript + ' '; done = done && e.results[i].isFinal; }
         cut.text = all;
-        const fresh = words(all).slice(cut.words).join(' ');
+        // Anchor on the last word already in the box (the recognizer may merge or insert words before it); fall back to the count.
+        const W = words(all), nw = (w) => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, ''), last = cut.shown.length ? nw(cut.shown[cut.shown.length - 1]) : '';
+        let k = cut.words;
+        if (last) { let best = -1; W.forEach((w, j) => { if (nw(w) === last && (best < 0 || Math.abs(j + 1 - cut.words) < Math.abs(best + 1 - cut.words))) best = j; }); if (best >= 0) k = best + 1; }
+        const fresh = W.slice(k).join(' ');
         if (done) { addFinal(fresh); skipBefore = e.results.length; cut = null; interimIdx = -1; }
         else interim = fresh;
       } else {
@@ -303,8 +307,8 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     // The user edited the box mid-recording: keep their text and drop the phrase being heard (it's already in the box).
     if (listening) {
       baseText = input.value.replace(/\s*$/, ' '); finalText = ''; skipBefore = seen; shownInterim = '';
-      if (cut) cut.words = words(cut.text).length;  // typed again: everything heard of that phrase so far is in the box now
-      else if (interimIdx >= 0 && interimIdx < seen) cut = {from: interimIdx, words: words(interimText).length, text: interimText};
+      if (cut) { cut.shown = words(cut.text); cut.words = cut.shown.length; }  // typed again: everything heard of that phrase so far is in the box now
+      else if (interimIdx >= 0 && interimIdx < seen) cut = {from: interimIdx, words: words(interimText).length, text: interimText, shown: words(interimText)};
     }
   });
   input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $('#composer').requestSubmit(); } });
@@ -372,7 +376,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     const bars = Object.entries(p.weights).filter(([, v]) => v).sort((a, b) => b[1] - a[1])
       .map(([k, v]) => `<div class="bar"><span>${esc({mutual: 'warm intro', capital_efficiency: 'capital efficiency', technical_depth: 'technical depth', founder_fit: 'founder fit'}[k] || k)}</span><span class="t"><i style="width:${v * 2.5}%"></i></span><span>${v}%</span></div>`).join('');
     block(`<div class="card profile"><div class="head">${agentAvatar()}<div><b>${esc(ME.first)}'s agent</b><span class="small">@${esc(ME.username)} · built from your interview</span></div></div>
-      <dl class="kv"><dt>Role</dt><dd>${esc(p.role)}</dd><dt>Focus</dt><dd>${esc(p.sectors.join(', '))} · ${esc(p.stages.join(', '))}</dd>
+      <dl class="kv"><dt>Role</dt><dd>${esc(p.role)}</dd><dt>Focus</dt><dd>${esc([...p.sectors, ...(p.extra_focus || [])].join(', '))} · ${esc(p.stages.join(', '))}</dd>
       <dt>Trusts</dt><dd>${esc(p.signal || 'A balanced read')}</dd>
       <dt>Hard no's</dt><dd>${esc(p.nos || "No hard no's")}</dd>
       <dt>Safety</dt><dd>${ME.mode === 'auto' ? 'Auto: PRISM watches and reviews notes' : 'Ask: PRISM off'}</dd></dl><div class="bars">${bars}</div></div>`);
@@ -510,7 +514,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
         <input type="password" id="pw-cur" placeholder="Current password" autocomplete="current-password" aria-label="Current password">
         <input type="password" id="pw-new" placeholder="New password (8+ characters)" autocomplete="new-password" aria-label="New password">
         <button class="btn">Change password</button></form><p class="hint" id="pw-hint"></p>
-      <h3>Your agent</h3>${p ? `<ul class="list"><li>${agentAvatar()}<span><b>${esc(ME.first)}'s agent</b><small>${esc(p.sectors.join(', '))} · ${esc(p.stages.join(', '))}</small></span></li></ul>` : '<p class="small">Finish the interview in the chat to build your agent.</p>'}
+      <h3>Your agent</h3>${p ? `<ul class="list"><li>${agentAvatar()}<span><b>${esc(ME.first)}'s agent</b><small>${esc([...p.sectors, ...(p.extra_focus || [])].join(', '))} · ${esc(p.stages.join(', '))}</small></span></li></ul>` : '<p class="small">Finish the interview in the chat to build your agent.</p>'}
       <h3>Safety</h3><div class="seg">
         <label class="${ME.mode === 'ask' ? 'on' : ''}"><input type="radio" name="mode" value="ask" ${ME.mode === 'ask' ? 'checked' : ''}><span><b>Ask mode (PRISM off)</b><small>Nothing is sent to PRISM. Your notes save straight away.</small></span></label>
         <label class="${ME.mode === 'auto' ? 'on' : ''} ${D.prism ? '' : 'off'}"><input type="radio" name="mode" value="auto" ${ME.mode === 'auto' ? 'checked' : ''} ${D.prism ? '' : 'disabled'}><span><b>Auto mode (PRISM on)</b><small>${D.prism ? 'PRISM watches everything the agent does and reviews each note before it is saved. It can block an unsafe note; you never have to approve one.' : D.prism_error ? `PRISM couldn't start: ${esc(D.prism_error)}` : 'Needs PRISMTRACE_API_KEY on the server.'}</small></span></label>
@@ -525,10 +529,10 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     };
     const fill = (id, html) => { const el = $('#' + id); if (el) el.innerHTML = html; };
     const removeMate = async (u) => {
-      try { ME = (await api('/api/team/' + encodeURIComponent(u), undefined, 'DELETE')).user; sys(`@${u} was removed from your team`); loadTeam(); }
+      try { ME = (await api('/api/team/' + encodeURIComponent(u), undefined, 'DELETE')).user; sys(`@${u} was removed from your team`); const h = $('#add-hint'); if (h) { h.textContent = `Removed @${u}.`; h.className = 'hint ok'; } loadTeam(); }
       catch (e) {
         if (e instanceof NeedsSignin) return;
-        const h = $('#add-hint'); if (h) { h.textContent = `Couldn't remove @${u}: ${e.status ? e.message : 'check your connection'}`; h.className = 'hint err'; }
+        const h = $('#add-hint'); if (h) { h.textContent = `Couldn't remove @${u}: ${e.said ? e.message : 'check your connection'}`; h.className = 'hint err'; }
       }
     };
     const wire = () => {
@@ -552,7 +556,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
       };
       dlg.querySelectorAll('input[name=mode]').forEach((r) => { r.onchange = async () => {
         try { ME = (await api('/api/settings', {mode: r.value})).user; $('#mode-hint').textContent = ''; sys(ME.mode === 'auto' ? 'Auto mode: PRISM watches the agent and reviews every note.' : 'Ask mode: PRISM is off.'); }
-        catch (e) { if (!(e instanceof NeedsSignin)) $('#mode-hint').textContent = e.status ? e.message : "Couldn't change the mode right now. Check your connection."; }
+        catch (e) { if (!(e instanceof NeedsSignin)) $('#mode-hint').textContent = e.said ? e.message : "Couldn't change the mode right now. Check your connection."; }
         dlg.querySelectorAll('input[name=mode]').forEach((x) => { x.checked = x.value === ME.mode; x.closest('label').classList.toggle('on', x.value === ME.mode); });
       }; });
       dlg.querySelectorAll('[data-rm]').forEach((b) => { b.onclick = () => removeMate(b.dataset.rm); });
@@ -566,7 +570,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
         t = setTimeout(async () => {
           let r;
           try { r = await api('/api/username/' + encodeURIComponent(u)); }
-          catch (e) { if (!(e instanceof NeedsSignin) && uIn.value.trim().replace(/^@/, '').toLowerCase() === u) { hint.textContent = e.status ? e.message : "Couldn't check that username right now."; hint.className = 'hint err'; } return; }
+          catch (e) { if (!(e instanceof NeedsSignin) && uIn.value.trim().replace(/^@/, '').toLowerCase() === u) { hint.textContent = e.said ? e.message : "Couldn't check that username right now."; hint.className = 'hint err'; } return; }
           if (uIn.value.trim().replace(/^@/, '').toLowerCase() !== u) return;
           if (!r.valid) { hint.textContent = r.message; hint.className = 'hint err'; }
           else if (r.exists) { hint.textContent = u === ME.username ? "That's you." : `@${u} exists.`; hint.className = u === ME.username ? 'hint err' : 'hint ok'; }
@@ -611,13 +615,13 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
   $('#open-settings').onclick = () => { $('#settings').showModal(); renderSettings(); };
 
   // ---------------------------------------------------------------- composer
-  let queued = [];
+  let queued = [], current = null, owner = null;  // owner: whose messages are waiting
   // Signed out with messages still waiting: put them back in the box, so nothing typed or dictated is lost.
   const requeue = () => {
-    if (queued.length) { input.value = [input.value.trim(), ...queued.map((q) => q.text)].filter(Boolean).join('\n'); grow(); }
-    queued = [];
+    if (current) { queued.unshift(current); current = null; }
+    if (queued.length && !input.value.trim()) { input.value = queued.shift().text; grow(); }
   };
-  function send(text, via) { if (step >= 0) run(() => answer(text)); else run(() => ask(text, via)); }
+  function send(text, via) { current = {text, via}; if (step >= 0) run(() => answer(text)); else run(() => ask(text, via)); }
   $('#composer').addEventListener('submit', (ev) => {
     ev.preventDefault();
     const wasDictated = dictated;
@@ -686,7 +690,7 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
     check = setTimeout(async () => {
       let r;
       try { r = await api('/api/username/' + encodeURIComponent(u)); }
-      catch (e) { if (authMode === 'up' && authUser.value.trim().replace(/^@/, '').toLowerCase() === u) hint(e.status ? e.message : "Couldn't check that username right now.", 'err'); return; }
+      catch (e) { if (authMode === 'up' && authUser.value.trim().replace(/^@/, '').toLowerCase() === u) hint(e.said ? e.message : "Couldn't check that username right now.", 'err'); return; }
       if (authMode !== 'up' || authUser.value.trim().replace(/^@/, '').toLowerCase() !== u) return;
       authState = r;
       if (!r.valid) hint(r.message, 'err');
@@ -720,6 +724,8 @@ background:var(--glass);cursor:pointer}.seg label.on{border-color:var(--blue);bo
 
   // ---------------------------------------------------------------- start
   function start() {
+    if (owner && owner !== ME.username) { queued = []; current = null; input.value = ''; grow(); }  // never send one person's notes as another
+    owner = ME.username;
     $('#auth').hidden = true; $('#app').hidden = false; $('#open-settings').hidden = false;
     chat.innerHTML = '';
     if (!ME.profile) { run(startInterview); return; }

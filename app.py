@@ -282,12 +282,19 @@ def _error(e):
 FOCUS_FILLER = {"and", "or", "plus", "the", "a", "an", "in", "of", "on", "to", "for", "with", "mostly", "mainly",
                 "seed", "pre", "preseed", "pre-seed", "series", "b", "c", "stage", "stages", "early", "earlier", "late", "later",
                 "growth", "idea", "generalist", "agnostic", "sector", "sectors", "startups", "startup", "companies", "company",
-                "founders", "anything", "everything", "all", "any", "etc", "focus", "invest", "i", "we", "tech", "technology"}
+                "founders", "anything", "everything", "all", "any", "etc", "focus", "invest", "i", "we", "tech", "technology",
+                "at", "from", "through", "across", "into", "by", "via", "up", "re", "ve", "investor", "investors", "investing",
+                "usually", "typically", "primarily", "broadly", "round", "rounds", "fund", "vc", "post", "first", "multi",
+                "check", "checks", "but", "no", "not", "except", "lead", "leads", "agnostic", "neutral"}
+GENERALIST = re.compile(r"\bgeneralists?\b|(?<!stage[- ])\bagnostic\b|\b(?:any|all|every) sectors?\b|\banything\b|\beverything\b|"
+                        r"sector[- ]neutral", re.I)
 
 
 def extra_focus(focus: str) -> list[str]:
     """Focus words outside the known sectors ("robotics", "edtech"), so they count as the person's thesis."""
-    words = re.findall(r"[a-z][a-z0-9+&-]*", focus.lower())
+    if GENERALIST.search(focus):
+        return []  # "generalist at seed", "sector-agnostic": every sector
+    words = re.findall(r"[a-z][a-z0-9+&]*", focus.lower())  # "early-stage" -> "early", "stage"
     known = ("devtool", "dev tool", "infra", "developer", "consumer", "cpg", "brand", "food", "retail", "fintech", "payments",
              "finance", "climate", "health")
     return list(dict.fromkeys(w for w in words if w not in FOCUS_FILLER and w != "ai" and len(w) > 1
@@ -308,6 +315,8 @@ def build_profile(a: dict, name: str) -> dict:
         if k in fl:
             sectors.append(k)
     extra = extra_focus(focus)
+    if GENERALIST.search(focus):
+        sectors = list(ALL_SECTORS)  # "generalist, mostly fintech" still considers every sector
     sectors = sectors or ([] if extra else list(ALL_SECTORS))  # "robotics and edtech" is a focus, not "everything"
     stages = ["seed"]
     if "pre-seed" in fl or "preseed" in fl:
@@ -441,6 +450,16 @@ def same_person(a: str, b: str) -> bool:
     return ta == tb or (min(len(ta), len(tb)) == 1 and bool(ta) and bool(tb) and ta[0] == tb[0])
 
 
+CO_SUFFIX = {"ai", "inc", "labs", "lab", "hq", "io", "app", "co", "corp", "ltd", "llc", "the"}
+
+
+def same_company(a: str, b: str) -> bool:
+    """"quillstack ai", "quillstack" and "quill stack" are one company; "quillstack" and "kite" are not."""
+    ca = "".join(w for w in a.split() if w not in CO_SUFFIX) or a.replace(" ", "")
+    cb = "".join(w for w in b.split() if w not in CO_SUFFIX) or b.replace(" ", "")
+    return ca == cb or (min(len(ca), len(cb)) >= 4 and (ca.startswith(cb) or cb.startswith(ca)))
+
+
 def _fuller(a: str | None, b: str | None) -> str | None:
     return a if (a and (not b or len(a.split()) >= len(b.split()))) else b
 
@@ -479,7 +498,7 @@ def founders_from(notes: list[dict]) -> list[dict]:
                 continue
             if is_company and fk and r.get("founder") and not same_person(_key(r["founder"]), fk):
                 continue
-            if not is_company and ck and " " not in fk and r.get("company") and _key(r["company"]) != ck:
+            if not is_company and ck and " " not in fk and r.get("company") and not same_company(_key(r["company"]), ck):
                 continue  # "Maya from Kite" is not the "Maya" from Quillstack
             hits.append(r)
         if not hits:
@@ -755,19 +774,23 @@ def _device() -> dict:
     return d if isinstance(d, dict) and isinstance(d.get("id"), str) else {}
 
 
-def known_device(u: str) -> str | None:
-    """This browser's id if it has signed in to @u before (a signed cookie set at sign-in), so strangers' tries on the
-    account never use up the owner's tries."""
+def _device_tag(user: dict) -> str:
+    return f"{user['username']}:{user.get('pw_ver', 0)}"  # a password change ends every browser's "known" status
+
+
+def known_device(user: dict) -> str | None:
+    """This browser's id if it has signed in to this account with its current password (a signed cookie set at
+    sign-in), so strangers' tries on the account never use up the owner's tries."""
     d = _device()
-    return d["id"] if u in (d.get("users") or []) else None
+    return d["id"] if _device_tag(user) in (d.get("users") or []) else None
 
 
-def remember_device(resp, u: str):
+def remember_device(resp, user: dict):
     s = _device_signer()
     if not s:
         return resp
     d = _device()
-    users = [x for x in d.get("users") or [] if x != u][-4:] + [u]
+    users = [x for x in d.get("users") or [] if str(x).split(":")[0] != user["username"]][-4:] + [_device_tag(user)]
     resp.set_cookie(DEVICE_COOKIE, s.dumps({"id": d.get("id") or secrets.token_hex(8), "users": users}), max_age=365 * 86400,
                     httponly=True, samesite="Lax", secure=bool(os.getenv("VERCEL")))
     return resp
@@ -785,6 +808,10 @@ def _reserve(path: str, t: float) -> bool:
             if cur is None:
                 continue  # its holder just finished: try once more
             if t - cur.get("t", 0) < 3 * ATTEMPT_SECONDS:
+                return False
+            try:  # only the one request that claims this stale blob's takeover marker may delete it
+                store.put(f"{path[:-5]}.x{cur.get('t', 0)}.json", {"t": t}, overwrite=False)
+            except store.Exists:
                 return False
             store.delete(path)
     return False
@@ -845,19 +872,19 @@ def api_signup():
         return jsonify({"error": "Use 2 to 30 letters, numbers, dots, dashes or underscores."}), 400
     if password_problem(pw):
         return jsonify({"error": password_problem(pw)}), 400
-    user = {"username": u, "name": name, "created_at": now(), "team": [], "settings": {"mode": "ask"}}
+    user = {"username": u, "name": name, "created_at": now(), "team": [], "settings": {"mode": "ask"},
+            "password": generate_password_hash(pw), "pw_ver": 1}
     try:
-        store.put(f"users/{u}.json", user, overwrite=False)  # claims the username, even if two people sign up at once
+        # One write claims the username (even if two people sign up at once) and holds the hash, so a failure after it
+        # never leaves an account nobody can sign in to.
+        store.put(f"users/{u}.json", user, overwrite=False)
     except store.Exists:
         return jsonify({"error": f"@{u} is taken."}), 409
-    try:
-        save_password(user, pw)
-    except Exception:
-        with contextlib.suppress(Exception):
-            store.delete(f"users/{u}.json")  # don't leave an account nobody can sign in to
-        raise
+    with contextlib.suppress(Exception):  # then the hash's own blob; if this fails, load_user moves it there later
+        store.put(f"auth/{u}.json", {"password": user["password"], "pw_ver": 1})
+        user["_auth"] = True
     start_session(user)
-    return remember_device(jsonify({"user": public(user)}), u)
+    return remember_device(jsonify({"user": public(user)}), user)
 
 
 @app.post("/api/signin")
@@ -872,7 +899,7 @@ def api_signin():
         if user:  # accounts from before passwords can't be claimed with just a name (the name is visible to anyone)
             return jsonify({"error": "This account was made before passwords existed. Create a new account."}), 403
         return jsonify({"error": "Wrong username or password."}), 403
-    dev = known_device(u)
+    dev = known_device(user)
     wait, why = claim_attempt(u, "d-" + dev, per_account=False) if dev else claim_attempt(u, client_key())
     if wait:
         return too_soon(wait, why)
@@ -880,7 +907,7 @@ def api_signin():
         if not check_password_hash(user["password"], pw):
             return jsonify({"error": "Wrong username or password."}), 403
         start_session(user)
-        return remember_device(jsonify({"user": public(user)}), u)
+        return remember_device(jsonify({"user": public(user)}), user)
     finally:
         finish_attempt(started)
 
@@ -904,7 +931,7 @@ def api_password(user):
         save_password(user, pw)
         trace_tool(user, "change_password", "(hidden)", "changed", started)
         start_session(user)  # keep this device signed in; every other device is signed out
-        return jsonify({"ok": True})
+        return remember_device(jsonify({"ok": True}), user)  # and the only browser still "known" for the new password
     finally:
         finish_attempt(started)
 

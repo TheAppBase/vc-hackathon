@@ -41,7 +41,8 @@ STOP = {"tons", "plenty", "dozens", "loads", "another", "numerous", "various", "
         "hundreds", "thousands", "heaps", "tonnes", "everybody", "handful", "dozen", "number", "five", "six", "seven",
         "eight", "nine", "ten", "twenty", "briefly", "online", "virtually", "finally", "quickly", "formally", "legal",
         "counsel", "lawyers", "accounting", "sales", "marketing", "product", "engineering", "design", "ops", "hr",
-        "recruiting", "me", "your"}
+        "recruiting", "me", "your", "customers", "users", "references", "advisors", "mentors", "recruiters",
+        "candidates", "investors", "lps", "partners", "colleagues", "portfolio", "folks", "people", "experts", "bankers"}
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 TIME_WORDS = {"today", "yesterday", "tonight", "last", "this", "earlier", "recently", "again", "later", "next"} | set(WEEKDAYS)
 
@@ -123,7 +124,7 @@ DONE = re.compile(r"\b(sent|done|followed up|introduced|booked|scheduled|wrapped
 # The investor's own finished step: "Sent Maya the deck", "I introduced her to Cara", "Done:" (not "She booked $25k MRR").
 MY_DONE = re.compile(r"^(?:i(?:'ve| have)?\s+|we(?:'ve| have)?\s+|just\s+|already\s+)?(?:sent|followed up|introduced|booked|"
                      r"scheduled|finished|completed|intro'd|emailed|pinged)\b|^done\b|^(?:that's|it's|that is|it is|all)\s+done\b|"
-                     r"(?:^|[,;:]\s*)done[.!]?$", re.I)
+                     r"(?:^|[,;:]\s*)(?:all\s+)?done[.!]?$|\b(?:intro|introduction|follow[- ]?up|deck|memo|email|term sheet|call)\b[^.,;]*\b(?:is|was) done\b", re.I)
 ACTION = re.compile(r"\b(send|intro|introduce|schedule|set up|loop in|book|get (?:him|her|them)|reach out|ping|email)\b", re.I)
 
 
@@ -176,9 +177,11 @@ def next_step_of(text: str, founder: str | None = None) -> str | None:
     who = r"he|she|they|her team|his team|their team|the founder|the team"
     if founder:
         who += "|" + re.escape(founder.split()[0])
-    plan = r"(?:will|'ll|is going to|are going to|plans? to|promised to|wants? to)\s+(?:also\s+)?"
+    plan = (r"(?:will|is going to|are going to|plans? to|promised to|wants? to|(?:is|are) (?:happy|keen|willing|glad|able) to)"
+            r"\s+(?:(?:also|probably|hopefully|definitely|then|likely)\s+)?")
     # The founder's own plan: "She will send us the data room", "Maya is going to intro us" (not "She has a lead, so...").
-    theirs = re.compile(rf"(?:^|\b)(?:{who})\s+{plan}$", re.I)
+    theirs = re.compile(rf"(?:^|\b)(?:{who})(?:\s+|(?='(?:ll|s going to|re going to)))(?:'ll\s+(?:(?:also|probably|then)\s+)?|"
+                        rf"'s going to\s+|'re going to\s+|{plan})$", re.I)
 
     def open_from(sentence: str, rx: re.Pattern) -> str | None:
         for m in rx.finditer(sentence):
@@ -254,7 +257,9 @@ def _event_in(text: str, low: str) -> str | None:
     mod = rf"(?:(?!(?:the|a|an|some|this|that|my|our|his|her|their|point|stage)\s)[a-z][\w'&-]*\s){{0,{mods}}}"
     for m in re.finditer(r"\b(?i:at) (?:the |a |an )?", text):
         start = max(text.rfind(".", 0, m.start()), text.rfind("\n", 0, m.start())) + 1
-        tail = SOON if PAST.search(text[start:m.start()]) else NOT_PAST
+        past = [p for p in PAST.finditer(text, start, m.start())]
+        # "Met Maya at the summit on Saturday" (when they met), not "met Raj, see him at the dinner on Thursday"
+        tail = SOON if past and not re.search(r"[,;]|\b(?:and|but|will|see|be)\b|'ll\b", text[past[-1].end():m.start()]) else NOT_PAST
         e = re.match(rf"((?:[A-Z0-9][\w'&-]*\s){{0,4}}{mod}(?i:{EVENT_CORE})|(?:[A-Z0-9][\w'&-]*\s){{1,4}}(?i:week|fair)|"
                      rf"(?i:career|job|trade|science|startup) fair)\b{tail}", text[m.end():])
         if e:
@@ -303,7 +308,8 @@ def heuristic_note(text: str, today: dt.date) -> dict:
     if ext["next_step"] and not ext["next_due"]:
         sents = [x.strip() for x in SENTENCE_END.split(text) if x and x.strip()]
         at = next((i for i, x in enumerate(sents) if ext["next_step"][:40] in x), None)
-        if at is not None and at + 1 < len(sents) and re.match(r"(?:ideally )?(?:by|due|before|on)\b", sents[at + 1], re.I):
+        if at is not None and at + 1 < len(sents) and re.match(r"(?:ideally )?(?:by|due|before|on)\s+(?:(?:this|next) )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+                                                                     r"tomorrow|eod|end of (?:the )?(?:day|week|month)|next week)[.!]?$", sents[at + 1], re.I):
             ext["next_due"] = due_from(sents[at + 1], today)
     if not ext["next_step"]:
         ext["step_done"] = any(MY_DONE.search(x.strip()) for x in SENTENCE_END.split(text) if x and x.strip())
@@ -337,7 +343,9 @@ def route_rules(text: str) -> dict:
                   r"(?:\s+(?:me|some|new|more|a few|good|great|promising|early[- ]stage|interesting))*"
                   r"(?:\s+(.+?))?\s+(?:founders?|startups?|companies|teams)\b"
                   r"(?:\s+(?:in|for|doing|working on|building|around|focused on|within|on)\s+(.+))?$")) \
-            and not re.match(r"(?:my|our|the|these|those|his|her|their)\b", m.group(1) or "", flags=re.I):
+            and (m.group(1) or "").lower() not in ("the", "these", "those"):
+        if re.match(r"(?:my|our)\b", m.group(1) or "", flags=re.I):
+            return {"intent": "rank", "query": ""}  # "show me my climate founders": the user's own
         return {"intent": "source", "query": " ".join(x for x in (m.group(1), m.group(2)) if x)}
     if re.search(r"^who (have|am) i (been )?talk|^who did i meet|^(show )?(me )?my conversations$|^what('s| is) next$|"
                  r"^(my |show )?(me )?(my )?follow[- ]?ups?$|^what do i owe|^(what|who)('s| is) (overdue|due)", q):
@@ -348,9 +356,11 @@ def route_rules(text: str) -> dict:
         return {"intent": "help", "query": ""}
     # Dictated questions often have no "?": "did jonah reply", "is patchbay raising", "which founders did i meet at yc".
     if text.strip().endswith("?") or re.match(
-            r"^(?:did|do|does|am|is|are|can|could|should|would|will|have|has)\s+(?!to\b)\w+|"
-            r"^(?:was|were) (?:i|we|you|anyone|they|he|she|it)\b|^(?:what|when|where|which|why|how)\b|"
-            r"^who\b(?! i met| we met)", q):
+            r"^(?:did|do|does|am|is|are|was|were|can|could|should|would|will|have|has) (?:i|we|you|anyone|anybody|they|he|she|it)\b|"
+            r"^(?:did|does|can|could|would) (?!to\b|a\b|an\b|the\b)\w+|"
+            r"^(?:what|when|where|which|why|how|who)(?:'s| (?:did|do|does|is|are|was|were|have|has|should|can|could|would|will|"
+            r"much|many|founders?|startups?|companies)\b)|^who\b(?! i met| we met)", q) or re.match(
+            r"(?i:did|does|is|are|has|have|can|should|would)\s+[A-Z]", t):  # not "Will": "Will Smith from Kite..." is a note
         return {"intent": "help", "query": ""}  # an unanswered question is never saved into the shared notes
     return {"intent": "save_note", "query": ""}
 
